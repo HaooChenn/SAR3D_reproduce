@@ -1,0 +1,9 @@
+pip install xformers==0.0.27.dev792
+pip install xformers==0.0.27.dev792
+pip install xformers==0.0.27.dev792
+pip install xformers==0.0.27.dev792
+pip install xformers==0.0.27.dev792
+pip install xformers==0.0.27.dev792
+pip install xformers==0.0.27.dev792
+pip install xformers==0.0.27.dev792
+pip install xformers==0.0.27.dev792

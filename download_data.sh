@@ -1,0 +1,2 @@
+/cpfs01/user/lanyushi.p/Repo/cyw/rclone-v1.68.0-linux-amd64/rclone  copy --progress --transfers 200 --checkers 200 \
+My-aliyun-oss://pjlab-lingjun-v2v/lanyushi/data/chunk-png-normal /cpfs01/user/lanyushi.p/data/chunk-png-normal/
