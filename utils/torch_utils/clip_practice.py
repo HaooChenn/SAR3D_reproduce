@@ -10,13 +10,6 @@ model, preprocess = clip.load("ViT-B/16", device=device)
 image = preprocess(Image.open("utils.torch_utils/CLIP.png")).unsqueeze(0).to(device)
 text = clip.tokenize(["a diagram", "a dog", "a cat"]).to(device)
 
-# with torch.no_grad():
-#     image_features = model.encode_image(image)
-#     text_features = model.encode_text(text)
-    
-#     logits_per_image, logits_per_text = model(image, text)
-#     probs = logits_per_image.softmax(dim=-1).cpu().numpy()
-
 with torch.no_grad():
     x = image.type(model.dtype) # 1 3 224 224
     self = model.visual

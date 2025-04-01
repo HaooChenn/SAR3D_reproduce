@@ -19,7 +19,7 @@ except ImportError as e:
     time.sleep(5)
     raise e
 
-import dist
+import utils.dist as dist
 
 class Dict_to_class:
     def __init__(self, **kwargs):

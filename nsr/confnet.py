@@ -35,20 +35,6 @@ class ConfNet(nn.Module):
             nn.ReLU(inplace=True)]
         self.network = nn.Sequential(*network)
 
-        # ! only the symmetric confidence is required
-        # out_net1 = [
-        #     nn.ConvTranspose2d(nf*2, nf, kernel_size=4, stride=2, padding=1, bias=False),  # 16x16 -> 32x32
-        #     nn.GroupNorm(16, nf),
-        #     nn.ReLU(inplace=True),
-        #     nn.ConvTranspose2d(nf, nf, kernel_size=4, stride=2, padding=1, bias=False),  # 32x32 -> 64x64
-        #     nn.GroupNorm(16, nf),
-        #     nn.ReLU(inplace=True),
-        #     nn.Conv2d(nf, 2, kernel_size=5, stride=1, padding=2, bias=False),  # 64x64
-        #     # nn.Conv2d(nf, 1, kernel_size=5, stride=1, padding=2, bias=False),  # 64x64
-        #     nn.Softplus()
-        # ]
-        # self.out_net1 = nn.Sequential(*out_net1)
-
         # ! for perceptual loss
         out_net2 = [nn.Conv2d(nf*2, 2, kernel_size=3, stride=1, padding=1, bias=False),  # 16x16
                     nn.Softplus()

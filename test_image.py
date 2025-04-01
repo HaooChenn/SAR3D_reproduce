@@ -18,7 +18,7 @@ from PIL import Image
 from transformers import AutoImageProcessor, Dinov2Model
 
 # Import custom modules
-import dist
+import utils.dist as dist
 from utils import arg_util, misc
 from utils.render_utils import render_video_given_triplane, render_video_given_triplane_mesh
 
@@ -48,7 +48,6 @@ def build_everything(args: arg_util.Args):
 
     # Initialize VAE and VAR models
     vae_local, var_wo_ddp = build_vae_var_3D_VAR(
-        V=4096, Cvae=32, ch=160, share_quant_resi=4,
         device=dist.get_device(), patch_nums=args.patch_nums,
         num_classes=1, depth=args.depth, shared_aln=args.saln, 
         attn_l2_norm=args.anorm, flash_if_available=args.fuse,

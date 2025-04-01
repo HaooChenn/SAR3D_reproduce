@@ -23,7 +23,6 @@ sample_*
 *.locks*
 *pretrained*
 eval*
-*sample*
 ten_scale/
 baseline/
 *.sh

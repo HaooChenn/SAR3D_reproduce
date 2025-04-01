@@ -18,17 +18,10 @@ https://github.com/rwightman/pytorch-image-models/blob/master/timm/models/vision
 from copy import deepcopy
 import math
 from functools import partial
-from sympy import flatten
 
 import torch
 import torch.nn as nn
-from torch import Tensor, pixel_shuffle
-
-from einops import rearrange, repeat
-from einops.layers.torch import Rearrange
-from torch.nn.modules import GELU, LayerNorm
-
-# from vit.vision_transformer import Conv3DCrossAttentionBlock
+from torch import Tensor
 
 from .utils import trunc_normal_
 
@@ -152,7 +145,9 @@ class CrossAttention(nn.Module):
 
 
 class Conv3D_Aware_CrossAttention(nn.Module):
-
+    """Cross attention module that is aware of 3D structure in triplane representation.
+    For each plane, it attends to corresponding rows/columns in the other two planes.
+    """
     def __init__(self,
                  dim,
                  num_heads=8,
@@ -163,126 +158,86 @@ class Conv3D_Aware_CrossAttention(nn.Module):
         super().__init__()
         self.num_heads = num_heads
         head_dim = dim // num_heads
-        # NOTE scale factor was wrong in my original version, can set manually to be compat with prev weights
         self.scale = qk_scale or head_dim**-0.5
 
+        # Linear projections for Q, K, V
         self.wq = nn.Linear(dim, dim, bias=qkv_bias)
         self.wk = nn.Linear(dim, dim, bias=qkv_bias)
         self.wv = nn.Linear(dim, dim, bias=qkv_bias)
+        
+        # Dropout layers
         self.attn_drop = nn.Dropout(attn_drop)
         self.proj = nn.Linear(dim, dim)
         self.proj_drop = nn.Dropout(proj_drop)
 
     def forward(self, x):
+        # x shape: [B, 3, N, C] where 3 represents triplane (xy, yz, zx)
+        B, group_size, N, C = x.shape  
+        p = int(N**0.5)  # Patch size
+        assert p**2 == N, 'Input dimension must be square patches without CLS token'
+        assert group_size == 3, 'Input must be triplane representation'
 
-        B, group_size, N, C = x.shape  # B 3 N C
-        p = int(N**0.5)  # patch size
-        assert p**2 == N, 'check input dim, no [cls] needed here'
-        assert group_size == 3, 'designed for triplane here'
+        # Reshape to explicit spatial dimensions
+        x = x.reshape(B, group_size, p, p, C)  
 
-        x = x.reshape(B, group_size, p, p, C)  # expand patch token dim
-
-        # * init qkv
-        # q = torch.empty(B * group_size * N,
-        #                 1,
-        #                 self.num_heads,
-        #                 C // self.num_heads,
-        #                 device=x.device).permute(0, 2, 1, 3)
-        # k = torch.empty(B * group_size * N,
-        #                 2 * p,
-        #                 self.num_heads,
-        #                 C // self.num_heads,
-        #                 device=x.device).permute(0, 2, 1, 3)
-        # v = torch.empty_like(k)
-
-        q_x = torch.empty(
-            B * group_size * N,
-            1,
-            # self.num_heads,
-            # C // self.num_heads,
-            C,
-            device=x.device)
-        k_x = torch.empty(
-            B * group_size * N,
-            2 * p,
-            # self.num_heads,
-            # C // self.num_heads,
-            C,
-            device=x.device)
+        # Initialize tensors for Q, K, V projections
+        q_x = torch.empty(B * group_size * N, 1, C, device=x.device)
+        k_x = torch.empty(B * group_size * N, 2 * p, C, device=x.device) 
         v_x = torch.empty_like(k_x)
 
-        # ! refer to the following plane order
-        # N, M, _ = coordinates.shape
-        # xy_coords = coordinates[..., [0, 1]]
-        # yz_coords = coordinates[..., [1, 2]]
-        # zx_coords = coordinates[..., [2, 0]]
-        # return torch.stack([xy_coords, yz_coords, zx_coords],
-        #                 dim=1).reshape(N * 3, M, 2)
-
+        # Create mesh grid for gathering corresponding rows/columns
         index_i, index_j = torch.meshgrid(torch.arange(0, p),
                                           torch.arange(0, p),
-                                          indexing='ij')  # 16*16
+                                          indexing='ij')
         index_mesh_grid = torch.stack([index_i, index_j], 0).to(
-            x.device).unsqueeze(0).repeat_interleave(B,
-                                                     0).reshape(B, 2, p,
-                                                                p)  # B 2 p p.
+            x.device).unsqueeze(0).repeat_interleave(B, 0).reshape(B, 2, p, p)
 
+        # Process each plane
         for i in range(group_size):
+            # Current plane becomes Q
             q_x[B * i * N:B * (i + 1) * N] = x[:, i:i + 1].permute(
-                0, 2, 3, 1, 4).reshape(B * N, 1, C)  # B 1 p p C -> B*N, 1, C
+                0, 2, 3, 1, 4).reshape(B * N, 1, C)
 
-            # TODO, how to batchify gather ops?
-            plane_yz = x[:, (i + 1) % group_size:(i + 1) % group_size +
-                         1]  # B 1 p p C
+            # Get corresponding rows/columns from other two planes
+            plane_yz = x[:, (i + 1) % group_size:(i + 1) % group_size + 1]
             plane_zx = x[:, (i + 2) % group_size:(i + 2) % group_size + 1]
 
-            assert plane_yz.shape == plane_zx.shape == (
-                B, 1, p, p, C), 'check sub plane dimensions'
+            assert plane_yz.shape == plane_zx.shape == (B, 1, p, p, C)
 
+            # Gather corresponding rows/columns
             pooling_plane_yz = torch.gather(
                 plane_yz,
                 dim=2,
-                index=index_mesh_grid[:, 0:1].reshape(B, 1, N, 1, 1).expand(
-                    -1, -1, -1, p,
-                    C)).permute(0, 2, 1, 3, 4)  # B 1 256 16 C => B 256 1 16 C
+                index=index_mesh_grid[:, 0:1].reshape(B, 1, N, 1, 1).expand(-1, -1, -1, p, C)
+            ).permute(0, 2, 1, 3, 4)
+            
             pooling_plane_zx = torch.gather(
                 plane_zx,
                 dim=3,
-                index=index_mesh_grid[:, 1:2].reshape(B, 1, 1, N, 1).expand(
-                    -1, -1, p, -1,
-                    C)).permute(0, 3, 1, 2, 4)  # B 1 16 256 C => B 256 1 16 C
+                index=index_mesh_grid[:, 1:2].reshape(B, 1, 1, N, 1).expand(-1, -1, p, -1, C)
+            ).permute(0, 3, 1, 2, 4)
 
-            k_x[B * i * N:B * (i + 1) *
-                N] = v_x[B * i * N:B * (i + 1) * N] = torch.cat(
-                    [pooling_plane_yz, pooling_plane_zx],
-                    dim=2).reshape(B * N, 2 * p,
-                                   C)  # B 256 2 16 C => (B*256) 2*16 C
+            # Concatenate gathered features for K and V
+            k_x[B * i * N:B * (i + 1) * N] = v_x[B * i * N:B * (i + 1) * N] = torch.cat(
+                [pooling_plane_yz, pooling_plane_zx],
+                dim=2).reshape(B * N, 2 * p, C)
 
-            # q[B * i * N: B * (i+1) * N] = self.wq(q_x).reshape(B*N, 1, self.num_heads, C // self.num_heads).permute( 0, 2, 1, 3)
-            # k[B * i * N: B * (i+1) * N] = self.wk(k_x).reshape(B*N, 2*p, self.num_heads, C // self.num_heads).permute( 0, 2, 1, 3)
-            # v[B * i * N: B * (i+1) * N] = self.wv(v_x).reshape(B*N, 2*p, self.num_heads, C // self.num_heads).permute( 0, 2, 1, 3)
+        # Project Q, K, V and reshape with heads
+        q = self.wq(q_x).reshape(B * group_size * N, 1, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        k = self.wk(k_x).reshape(B * group_size * N, 2 * p, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
+        v = self.wv(v_x).reshape(B * group_size * N, 2 * p, self.num_heads, C // self.num_heads).permute(0, 2, 1, 3)
 
-        q = self.wq(q_x).reshape(B * group_size * N, 1,
-                                 self.num_heads, C // self.num_heads).permute(
-                                     0, 2, 1,
-                                     3)  # merge num_heads into Batch dimention
-        k = self.wk(k_x).reshape(B * group_size * N, 2 * p, self.num_heads,
-                                 C // self.num_heads).permute(0, 2, 1, 3)
-        v = self.wv(v_x).reshape(B * group_size * N, 2 * p, self.num_heads,
-                                 C // self.num_heads).permute(0, 2, 1, 3)
-
-        attn = (q @ k.transpose(
-            -2, -1)) * self.scale  # BH1(C/H) @ BH(C/H)N -> BH1N, N=2p here
+        # Compute attention scores
+        attn = (q @ k.transpose(-2, -1)) * self.scale
         attn = attn.softmax(dim=-1)
         attn = self.attn_drop(attn)
 
-        x = (attn @ v).transpose(1, 2).reshape(
-            B * 3 * N, 1,
-            C)  # (BH1N @ BHN(C/H)) -> BH1(C/H) -> B1H(C/H) -> B1C
+        # Apply attention to values
+        x = (attn @ v).transpose(1, 2).reshape(B * 3 * N, 1, C)
         x = self.proj(x)
         x = self.proj_drop(x)
 
-        # reshape x back
+        # Reshape output back to original dimensions
         x = x.reshape(B, 3, N, C)
 
         return x
@@ -378,7 +333,6 @@ class xformer_Conv3D_Aware_CrossAttention(nn.Module):
         k, v = unbind(kv, 2)
 
         x = memory_efficient_attention(q, k, v, attn_bias=attn_bias)
-        # x = memory_efficient_attention(q, k, v, attn_bias=attn_bias, op=MemoryEfficientAttentionFlashAttentionOp)
         x = x.transpose(1, 2).reshape([B * 3 * N, 1, C]).reshape(B, 3, N, C)
 
         x = self.proj(x)
@@ -510,26 +464,6 @@ class self_cross_attn(nn.Module):
         y = self.dino_attn(x_norm) + x_norm
         return self.cross_attn(y) # will add x in the original code
 
-# class RodinRollOutConv(nn.Module):
-#     """implementation wise clearer, but yields identical results with xformer_Conv3D_Aware_CrossAttention
-#     Use Group Conv
-#     """
-
-#     def __init__(self, in_chans, out_chans=None):
-#         super().__init__()
-#         # input: B 3C H W
-#         if out_chans is None:
-#             out_chans = in_chans
-
-#         self.roll_out_convs = nn.Conv2d(in_chans,
-#                                         out_chans,
-#                                         kernel_size=3,
-#                                         groups=3,
-#                                         padding=1)
-
-#     def forward(self, x):
-#         return self.roll_out_convs(x)
-
 
 class RodinRollOutConv3D(nn.Module):
     """implementation wise clearer, but yields identical results with xformer_Conv3D_Aware_CrossAttention
@@ -585,7 +519,8 @@ class RodinRollOutConv3D(nn.Module):
 
 
 class RodinRollOutConv3D_GroupConv(nn.Module):
-    """implementation wise clearer, but yields identical results with xformer_Conv3D_Aware_CrossAttention
+    """Applies grouped convolution to rolled out triplane features.
+    Processes each plane separately using group convolution.
     """
 
     def __init__(self,
@@ -598,65 +533,53 @@ class RodinRollOutConv3D_GroupConv(nn.Module):
         if out_chans is None:
             out_chans = in_chans
 
+        # Group conv with 3 groups for processing each plane separately
         self.roll_out_convs = nn.Conv2d(
             in_chans * 3,
             out_chans,
             kernel_size=kernel_size,
-            groups=3,  # B 9C H W
+            groups=3,  # Process each plane separately
             stride=stride,
             padding=padding)
 
-    # @torch.autocast(device_type='cuda')
     def forward(self, x):
-        # todo, reshape before input?
-
-        B, C3, p, p = x.shape  # B 3C H W
+        # Input shape: B, 3C, H, W
+        B, C3, p, p = x.shape  
         C = C3 // 3
         group_size = C3 // C
         assert group_size == 3
 
+        # Reshape to B, 3, C, H, W to handle planes separately
         x = x.reshape(B, 3, C, p, p)
 
+        # Output tensor to store rolled out features
         roll_out_x = torch.empty(B, group_size * C * 3, p, p,
-                                 device=x.device)  # B, 3C, H, 3W
+                                 device=x.device)  # B, 9C, H, W
 
+        # Process each plane
         for i in range(group_size):
-            plane_xy = x[:, i]  # B C H W
+            plane_xy = x[:, i]  # Current plane
 
-            # # TODO, simply do the average pooling?
+            # Average pooling along z dimension for yz plane
             plane_yz_pooling = x[:, (i + 1) % group_size].mean(
-                dim=-1, keepdim=True).repeat_interleave(
-                    p, dim=-1)  # B C H W -> B C H 1 -> B C H W, reduce z dim
+                dim=-1, keepdim=True).repeat_interleave(p, dim=-1)
+            
+            # Average pooling along y dimension for zx plane  
             plane_zx_pooling = x[:, (i + 2) % group_size].mean(
-                dim=-2, keepdim=True).repeat_interleave(
-                    p, dim=-2)  # B C H W -> B C 1 W -> B C H W, reduce z dim
+                dim=-2, keepdim=True).repeat_interleave(p, dim=-2)
 
+            # Concatenate the three planes
             roll_out_x[:, i * 3 * C:(i + 1) * 3 * C] = torch.cat(
-                [plane_xy, plane_yz_pooling, plane_zx_pooling],
-                1)  # fill in the 3W dim
+                [plane_xy, plane_yz_pooling, plane_zx_pooling], 1)
 
-            # ! directly cat, avoid intermediate vars
-            # ? why OOM
-            # roll_out_x[:, i * 3 * C:(i + 1) * 3 * C] = torch.cat(
-            #     [
-            #         x[:, i],
-            #         x[:, (i + 1) % group_size].mean(
-            #             dim=-1, keepdim=True).repeat_interleave(p, dim=-1),
-            #         x[:, (i + 2) % group_size].mean(
-            #             dim=-2, keepdim=True).repeat_interleave(
-            #                 p, dim=-2
-            #             )  # B C H W -> B C 1 W -> B C H W, reduce z dim
-            #     ],
-            #     1)  # fill in the 3C dim
-
-        x = self.roll_out_convs(roll_out_x)  # B 3C H W
+        # Apply grouped convolution
+        x = self.roll_out_convs(roll_out_x)  # B, 3C, H, W
 
         return x
 
 
 class RodinRollOut_GroupConv_noConv3D(nn.Module):
-    """only roll out and do Conv on individual planes
-    """
+    """Simple grouped convolution on rolled out planes without 3D convolution"""
 
     def __init__(self,
                  in_chans,
@@ -672,43 +595,17 @@ class RodinRollOut_GroupConv_noConv3D(nn.Module):
             in_chans,
             out_chans,
             kernel_size=kernel_size,
-            groups=3,  # B 3C H W
+            groups=3,  # Process each plane separately
             stride=stride,
             padding=padding)
 
     def forward(self, x):
-        x = self.roll_out_inplane_conv(x)  # B 3C H W
+        x = self.roll_out_inplane_conv(x)  # B, 3C, H, W
         return x
 
 
-# class RodinConv3D_SynthesisLayer_withact(nn.Module):
-#     def __init__(self, in_chans, out_chans) -> None:
-#         super().__init__()
-
-#         self.act = nn.LeakyReLU(inplace=True)
-#         self.conv = nn.Sequential(
-#             RodinRollOutConv3D_GroupConv(in_chans, out_chans),
-#             nn.LeakyReLU(inplace=True),
-#         )
-
-#         if in_chans != out_chans:
-#             self.short_cut = RodinRollOutConv3D_GroupConv(in_chans, out_chans) # PSNR 13 first iteration.
-#         else:
-#             self.short_cut = None
-
-# def forward(self, feats):
-
-#     if self.short_cut is not None:
-#         res_feats = self.short_cut(feats)
-#     else:
-#         res_feats = feats
-
-#     # return res_feats + self.conv(feats)
-#     feats = res_feats + self.conv(feats)
-#     return self.act(feats) # as in resnet, add an act before return
-
-
 class RodinConv3D_SynthesisLayer_mlp_unshuffle_as_residual(nn.Module):
+    """Synthesis layer with MLP-based residual connection and unshuffling"""
 
     def __init__(self, in_chans, out_chans) -> None:
         super().__init__()
@@ -721,13 +618,11 @@ class RodinConv3D_SynthesisLayer_mlp_unshuffle_as_residual(nn.Module):
 
         self.out_chans = out_chans
         if in_chans != out_chans:
-            # self.short_cut = RodinRollOutConv3D_GroupConv(in_chans, out_chans) # PSNR 13 first iteration.
-            self.short_cut = nn.Linear(  # B 3C H W -> B 3C 4H 4W
-                in_chans // 3,  # 144 / 3 = 48
-                out_chans // 3 * 4 * 4,  # 32 * 16
-                bias=True)  # decoder to pat
-
-            # RodinRollOutConv3D_GroupConv(in_chans, out_chans) # PSNR 13 first iteration.
+            # Linear layer for channel dimension change
+            self.short_cut = nn.Linear(
+                in_chans // 3,
+                out_chans // 3 * 4 * 4,  # 4x upscaling
+                bias=True)
         else:
             self.short_cut = None
 
@@ -735,77 +630,42 @@ class RodinConv3D_SynthesisLayer_mlp_unshuffle_as_residual(nn.Module):
                                      x,
                                      p=None,
                                      unpatchify_out_chans=None):
-        """separate triplane version; x shape: B (3*257) 768
-        """
-
+        """Unpatchify and reshape triplane features in shortcut path"""
         assert self.short_cut is not None
 
-        # B, L, C = x.shape
         B, C3, h, w = x.shape
         assert h == w
         L = h * w
-        x = x.reshape(B, C3 // 3, 3, L).permute(0, 2, 3,
-                                                1)  # (B, 3, L // 3, C)
+        
+        # Reshape for per-plane processing
+        x = x.reshape(B, C3 // 3, 3, L).permute(0, 2, 3, 1)
 
+        # Apply linear transformation
         x = self.short_cut(x)
 
         p = h * 4
 
+        # Reshape and reorder dimensions for triplane format
         x = x.reshape(shape=(B, 3, h, w, p, p, unpatchify_out_chans))
-        x = torch.einsum('ndhwpqc->ndchpwq',
-                         x)  # nplanes, C order in the renderer.py
+        x = torch.einsum('ndhwpqc->ndchpwq', x)
         x = x.reshape(shape=(B, 3 * self.out_chans, h * p, h * p))
         return x
 
     def forward(self, feats):
-
         if self.short_cut is not None:
             res_feats = self.shortcut_unpatchify_triplane(feats)
         else:
             res_feats = feats
 
-        # return res_feats + self.conv(feats)
-
         feats = res_feats + self.conv(feats)
-        return self.act(feats)  # as in resnet, add an act before return
+        return self.act(feats)
 
 
-# class RodinConv3D_SynthesisLayer(nn.Module):
-#     def __init__(self, in_chans, out_chans) -> None:
-#         super().__init__()
-
-#         self.act = nn.LeakyReLU(inplace=True)
-#         self.conv = nn.Sequential(
-#             RodinRollOutConv3D_GroupConv(in_chans, out_chans),
-#             nn.LeakyReLU(inplace=True),
-#         )
-
-#         if in_chans != out_chans:
-#             self.short_cut = RodinRollOutConv3D_GroupConv(in_chans, out_chans) # PSNR 13 first iteration.
-#         else:
-#             self.short_cut = None
-
-#     def forward(self, feats):
-
-#         if self.short_cut is not None:
-#             res_feats = self.short_cut(feats)
-#         else:
-#             res_feats = feats
-
-#         # return res_feats + self.conv(feats)
-
-#         feats = res_feats + self.conv(feats)
-#         # return self.act(feats) # as in resnet, add an act before return
-#         return feats # ! old behaviour, no act
-
-
-# previous worked version
 class RodinConv3D_SynthesisLayer(nn.Module):
+    """Basic synthesis layer with residual connection"""
 
     def __init__(self, in_chans, out_chans) -> None:
         super().__init__()
-        # x2 SR + 1x1 Conv Residual BLK
-        # self.conv3D = RodinRollOutConv3D(in_chans, out_chans)
 
         self.act = nn.LeakyReLU(inplace=True)
         self.conv = nn.Sequential(
@@ -821,39 +681,32 @@ class RodinConv3D_SynthesisLayer(nn.Module):
     def forward(self, feats):
         feats_out = self.conv(feats)
         if self.short_cut is not None:
-            # ! failed below
-            feats_out = self.short_cut(
-                feats
-            ) + feats_out  # ! only difference here, no act() compared with baseline
-            # feats_out = self.act(self.short_cut(feats)) + feats_out # ! only difference here, no act() compared with baseline
+            feats_out = self.short_cut(feats) + feats_out
         else:
             feats_out = feats_out + feats
         return feats_out
 
 
 class RodinRollOutConv3DSR2X(nn.Module):
+    """2x super-resolution module for triplane features"""
 
     def __init__(self, in_chans, **kwargs) -> None:
         super().__init__()
         self.conv3D = RodinRollOutConv3D_GroupConv(in_chans)
-        # self.conv3D = RodinRollOutConv3D(in_chans)
         self.act = nn.LeakyReLU(inplace=True)
         self.input_resolution = 224
 
     def forward(self, x):
-        # x: B 3 112*112 C
-        B, C3, p, p = x.shape  # after unpachify triplane
+        # Input shape: B, 3C, H, W
+        B, C3, p, p = x.shape
         C = C3 // 3
         group_size = C3 // C
-
         assert group_size == 3
-        # p = int(N**0.5)  # patch size
-        # assert p**2 == N, 'check input dim, no [cls] needed here'
-        assert group_size == 3, 'designed for triplane here'
 
-        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p,
-                                          p)  # B 3 C N -> B 3C h W
+        # Reshape and permute dimensions
+        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p, p)
 
+        # Upsample if needed
         if x.shape[-1] != self.input_resolution:
             x = torch.nn.functional.interpolate(x,
                                                 size=(self.input_resolution,
@@ -863,34 +716,30 @@ class RodinRollOutConv3DSR2X(nn.Module):
                                                 antialias=True)
 
         x = x + self.conv3D(x)
-
         return x
 
 
 class RodinRollOutConv3DSR4X_lite(nn.Module):
+    """4x super-resolution module with two conv stages"""
 
     def __init__(self, in_chans, input_resolutiopn=256, **kwargs) -> None:
         super().__init__()
         self.conv3D_0 = RodinRollOutConv3D_GroupConv(in_chans)
         self.conv3D_1 = RodinRollOutConv3D_GroupConv(in_chans)
-
         self.act = nn.LeakyReLU(inplace=True)
         self.input_resolution = input_resolutiopn
 
     def forward(self, x):
-        # x: B 3 112*112 C
-        B, C3, p, p = x.shape  # after unpachify triplane
+        # Input shape: B, 3C, H, W
+        B, C3, p, p = x.shape
         C = C3 // 3
         group_size = C3 // C
-
         assert group_size == 3
-        # p = int(N**0.5)  # patch size
-        # assert p**2 == N, 'check input dim, no [cls] needed here'
-        assert group_size == 3, 'designed for triplane here'
 
-        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p,
-                                          p)  # B 3 C N -> B 3C h W
+        # Reshape and permute dimensions
+        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p, p)
 
+        # Upsample if needed
         if x.shape[-1] != self.input_resolution:
             x = torch.nn.functional.interpolate(x,
                                                 size=(self.input_resolution,
@@ -899,155 +748,59 @@ class RodinRollOutConv3DSR4X_lite(nn.Module):
                                                 align_corners=False,
                                                 antialias=True)
 
-        # ! still not convering, not bug here?
-        # x = x + self.conv3D_0(x)
-        # x = x + self.conv3D_1(x)
-
+        # Apply two conv stages with residual connections
         x = x + self.act(self.conv3D_0(x))
         x = x + self.act(self.conv3D_1(x))
 
-        # TODO: which is better, bilinear + conv or PixelUnshuffle?
-
         return x
 
-
-# class RodinConv3D2X_lite_mlp_as_residual(nn.Module):
-#     """lite 4X version, with MLP unshuffle to change the dimention
-#     """
-#     def __init__(self, in_chans, out_chans, input_resolution=256) -> None:
-#         super().__init__()
-
-#         self.act = nn.LeakyReLU(inplace=True)
-
-#         self.conv3D_0 = RodinRollOutConv3D_GroupConv(in_chans, out_chans)
-#         self.conv3D_1 = RodinRollOutConv3D_GroupConv(out_chans, out_chans)
-
-#         self.act = nn.LeakyReLU(inplace=True)
-#         self.input_resolution = input_resolution
-
-#         self.out_chans = out_chans
-#         if in_chans != out_chans: # ! only change the dimension
-#             self.short_cut = nn.Linear( # B 3C H W -> B 3C 4H 4W
-#                 in_chans//3, # 144 / 3 = 48
-#                 out_chans//3, # 32 * 16
-#                 bias=True)  # decoder to pat
-#         else:
-#             self.short_cut = None
-
-#     def shortcut_unpatchify_triplane(self, x, p=None):
-#         """separate triplane version; x shape: B (3*257) 768
-#         """
-
-#         assert self.short_cut is not None
-
-#         # B, L, C = x.shape
-#         B, C3, h, w = x.shape
-#         assert h == w
-#         L = h*w
-#         x = x.reshape(B, C3//3, 3, L).permute(0,2,3,1) # (B, 3, L // 3, C_in)
-
-#         x = self.short_cut(x) # B 3 L//3 C_out
-
-#         x = x.permute(0,1,3,2) # B 3 C_out L//3
-#         x = x.reshape(shape=(B, self.out_chans, h, w))
-
-#         # directly resize to the target, no unpatchify here since no 3D ViT is included here
-#         if w != self.input_resolution:
-#             x = torch.nn.functional.interpolate(x, # 4X SR
-#                                                 size=(self.input_resolution,
-#                                                       self.input_resolution),
-#                                                 mode='bilinear',
-#                                                 align_corners=False,
-#                                                 antialias=True)
-
-#         return x
-
-#     def forward(self, x):
-
-#         # x: B 3 112*112 C
-#         B, C3, p, p = x.shape  # after unpachify triplane
-#         C = C3 // 3
-
-#         if self.short_cut is not None:
-#             res_feats = self.shortcut_unpatchify_triplane(x)
-#         else:
-#             res_feats = x
-
-#         """following forward code copied from lite4x version
-#         """
-#         x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p,
-#                                           p)  # B 3 C N -> B 3C h W
-
-#         if x.shape[-1] != self.input_resolution:
-#             x = torch.nn.functional.interpolate(x, # 4X SR
-#                                                 size=(self.input_resolution,
-#                                                       self.input_resolution),
-#                                                 mode='bilinear',
-#                                                 align_corners=False,
-#                                                 antialias=True)
-
-#         x = res_feats + self.act(self.conv3D_0(x))
-#         x = x + self.act(self.conv3D_1(x))
-
-#         return x
-
-
 class RodinConv3D4X_lite_mlp_as_residual(nn.Module):
-    """lite 4X version, with MLP unshuffle to change the dimention
-    """
+    """Lite 4X version with MLP unshuffle for dimension change"""
 
     def __init__(self,
                  in_chans,
-                 out_chans,
+                 out_chans, 
                  input_resolution=256,
                  interp_mode='bilinear',
                  bcg_triplane=False) -> None:
         super().__init__()
 
         self.interp_mode = interp_mode
-
         self.act = nn.LeakyReLU(inplace=True)
-
         self.conv3D_0 = RodinRollOutConv3D_GroupConv(in_chans, out_chans)
         self.conv3D_1 = RodinRollOutConv3D_GroupConv(out_chans, out_chans)
+        
         self.bcg_triplane = bcg_triplane
         if bcg_triplane:
-            self.conv3D_1_bg = RodinRollOutConv3D_GroupConv(
-                out_chans, out_chans)
+            self.conv3D_1_bg = RodinRollOutConv3D_GroupConv(out_chans, out_chans)
 
-        self.act = nn.LeakyReLU(inplace=True)
         self.input_resolution = input_resolution
-
         self.out_chans = out_chans
-        if in_chans != out_chans:  # ! only change the dimension
-            self.short_cut = nn.Linear(  # B 3C H W -> B 3C 4H 4W
-                in_chans // 3,  # 144 / 3 = 48
-                out_chans // 3,  # 32 * 16
-                bias=True)  # decoder to pat
+
+        # Only change dimension if input/output channels differ
+        if in_chans != out_chans:
+            self.short_cut = nn.Linear(
+                in_chans // 3,
+                out_chans // 3,
+                bias=True)
         else:
             self.short_cut = None
 
     def shortcut_unpatchify_triplane(self, x, p=None):
-        """separate triplane version; x shape: B (3*257) 768
-        """
-
+        """Separate triplane version for B (3*257) 768 input"""
         assert self.short_cut is not None
 
         B, C3, h, w = x.shape
         assert h == w
         L = h * w
-        x = x.reshape(B, C3 // 3, 3, L).permute(0, 2, 3,
-                                                1)  # (B, 3, L // 3, C_in)
-
-        x = self.short_cut(x)  # B 3 L//3 C_out
-
-        x = x.permute(0, 1, 3, 2)  # B 3 C_out L//3
+        x = x.reshape(B, C3 // 3, 3, L).permute(0, 2, 3, 1)
+        x = self.short_cut(x)
+        x = x.permute(0, 1, 3, 2)
         x = x.reshape(shape=(B, self.out_chans, h, w))
 
-        # directly resize to the target, no unpatchify here since no 3D ViT is included here
         if w != self.input_resolution:
             x = torch.nn.functional.interpolate(
-                x,  # 4X SR
+                x,
                 size=(self.input_resolution, self.input_resolution),
                 mode='bilinear',
                 align_corners=False,
@@ -1058,22 +811,20 @@ class RodinConv3D4X_lite_mlp_as_residual(nn.Module):
     def interpolate(self, feats):
         if self.interp_mode == 'bilinear':
             return torch.nn.functional.interpolate(
-                feats,  # 4X SR
+                feats,
                 size=(self.input_resolution, self.input_resolution),
                 mode='bilinear',
                 align_corners=False,
                 antialias=True)
         else:
             return torch.nn.functional.interpolate(
-                feats,  # 4X SR
+                feats,
                 size=(self.input_resolution, self.input_resolution),
                 mode='nearest',
             )
 
     def forward(self, x):
-
-        # x: B 3 112*112 C
-        B, C3, p, p = x.shape  # after unpachify triplane
+        B, C3, p, p = x.shape
         C = C3 // 3
 
         if self.short_cut is not None:
@@ -1082,16 +833,15 @@ class RodinConv3D4X_lite_mlp_as_residual(nn.Module):
             res_feats = x
             if res_feats.shape[-1] != self.input_resolution:
                 res_feats = self.interpolate(res_feats)
-        """following forward code copied from lite4x version
-        """
-        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p,
-                                          p)  # B 3 C N -> B 3C h W
+
+        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p, p)
 
         if x.shape[-1] != self.input_resolution:
             x = self.interpolate(x)
 
-        x0 = res_feats + self.act(self.conv3D_0(x))  # the base feature
+        x0 = res_feats + self.act(self.conv3D_0(x))
         x = x0 + self.act(self.conv3D_1(x0))
+        
         if self.bcg_triplane:
             x_bcg = x0 + self.act(self.conv3D_1_bg(x0))
             return torch.cat([x, x_bcg], 1)
@@ -1099,8 +849,7 @@ class RodinConv3D4X_lite_mlp_as_residual(nn.Module):
             return x
 
 
-class RodinConv3D4X_lite_mlp_as_residual_litev2(
-        RodinConv3D4X_lite_mlp_as_residual):
+class RodinConv3D4X_lite_mlp_as_residual_litev2(RodinConv3D4X_lite_mlp_as_residual):
 
     def __init__(self,
                  in_chans,
@@ -1109,46 +858,29 @@ class RodinConv3D4X_lite_mlp_as_residual_litev2(
                  input_resolution=256,
                  interp_mode='bilinear',
                  bcg_triplane=False) -> None:
-        super().__init__(in_chans, out_chans, input_resolution, interp_mode,
-                         bcg_triplane)
+        super().__init__(in_chans, out_chans, input_resolution, interp_mode, bcg_triplane)
 
         self.conv3D_0 = RodinRollOutConv3D_GroupConv(in_chans, in_chans)
-        self.conv_before_upsample = RodinRollOut_GroupConv_noConv3D(
-            in_chans, num_feat * 3)
-        self.conv3D_1 = RodinRollOut_GroupConv_noConv3D(
-            num_feat * 3, num_feat * 3)
-        self.conv_last = RodinRollOut_GroupConv_noConv3D(
-            num_feat * 3, out_chans)
+        self.conv_before_upsample = RodinRollOut_GroupConv_noConv3D(in_chans, num_feat * 3)
+        self.conv3D_1 = RodinRollOut_GroupConv_noConv3D(num_feat * 3, num_feat * 3)
+        self.conv_last = RodinRollOut_GroupConv_noConv3D(num_feat * 3, out_chans)
         self.short_cut = None
 
     def forward(self, x):
-
-        # x: B 3 112*112 C
-        B, C3, p, p = x.shape  # after unpachify triplane
+        B, C3, p, p = x.shape
         C = C3 // 3
 
-        # if self.short_cut is not None:
-        #     res_feats = self.shortcut_unpatchify_triplane(x)
-        # else:
-        #     res_feats = x
-        #     if res_feats.shape[-1] != self.input_resolution:
-        #         res_feats = self.interpolate(res_feats)
-        """following forward code copied from lite4x version
-        """
-        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p,
-                                          p)  # B 3 C N -> B 3C h W
+        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p, p)
 
-        x = x + self.conv3D_0(x)  # the base feature
+        x = x + self.conv3D_0(x)
         x = self.act(self.conv_before_upsample(x))
-
-        # if x.shape[-1] != self.input_resolution:
         x = self.conv_last(self.act(self.conv3D_1(self.interpolate(x))))
 
         return x
 
 
-class RodinConv3D4X_lite_mlp_as_residual_lite(
-        RodinConv3D4X_lite_mlp_as_residual):
+class RodinConv3D4X_lite_mlp_as_residual_lite(RodinConv3D4X_lite_mlp_as_residual):
+    """Version with first RodinConv3D replaced by rollout conv to save memory"""
 
     def __init__(self,
                  in_chans,
@@ -1156,14 +888,13 @@ class RodinConv3D4X_lite_mlp_as_residual_lite(
                  input_resolution=256,
                  interp_mode='bilinear') -> None:
         super().__init__(in_chans, out_chans, input_resolution, interp_mode)
-        """replace the first Rodin Conv 3D with ordinary rollout conv to save memory
-        """
         self.conv3D_0 = RodinRollOut_GroupConv_noConv3D(in_chans, out_chans)
 
 
 class SR3D(nn.Module):
-    # https://github.com/SeanChenxy/Mimic3D/blob/77d313656df3cd5536d2c4c5766db3a56208eea6/training/networks_stylegan2.py#L629
-    # roll-out and apply two deconv/pixelUnshuffle layer
+    """Roll-out and apply two deconv/pixelUnshuffle layers
+    Reference: https://github.com/SeanChenxy/Mimic3D
+    """
 
     def __init__(self, *args, **kwargs) -> None:
         super().__init__(*args, **kwargs)
@@ -1181,59 +912,31 @@ class RodinConv3D4X_lite_mlp_as_residual_improved(nn.Module):
         assert in_chans == 4 * out_chans
         assert num_feat == 2 * out_chans
         self.input_resolution = input_resolution
-
-        # refer to https://github.com/JingyunLiang/SwinIR/blob/6545850fbf8df298df73d81f3e8cba638787c8bd/models/network_swinir.py#L750
         self.upscale = 4
 
-        self.conv_after_body = RodinRollOutConv3D_GroupConv(
-            in_chans, in_chans, 3, 1, 1)
+        self.conv_after_body = RodinRollOutConv3D_GroupConv(in_chans, in_chans, 3, 1, 1)
         self.conv_before_upsample = nn.Sequential(
             RodinRollOutConv3D_GroupConv(in_chans, num_feat, 3, 1, 1),
             nn.LeakyReLU(inplace=True))
-        self.conv_up1 = RodinRollOutConv3D_GroupConv(num_feat, num_feat, 3, 1,
-                                                     1)
+        self.conv_up1 = RodinRollOutConv3D_GroupConv(num_feat, num_feat, 3, 1, 1)
         if self.upscale == 4:
-            self.conv_up2 = RodinRollOutConv3D_GroupConv(
-                num_feat, num_feat, 3, 1, 1)
-        self.conv_hr = RodinRollOutConv3D_GroupConv(num_feat, num_feat, 3, 1,
-                                                    1)
-        self.conv_last = RodinRollOutConv3D_GroupConv(num_feat, out_chans, 3,
-                                                      1, 1)
+            self.conv_up2 = RodinRollOutConv3D_GroupConv(num_feat, num_feat, 3, 1, 1)
+        self.conv_hr = RodinRollOutConv3D_GroupConv(num_feat, num_feat, 3, 1, 1)
+        self.conv_last = RodinRollOutConv3D_GroupConv(num_feat, out_chans, 3, 1, 1)
 
         self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
 
     def forward(self, x):
-
-        # x: B 3 112*112 C
-        B, C3, p, p = x.shape  # after unpachify triplane
+        B, C3, p, p = x.shape
         C = C3 // 3
-        """following forward code copied from lite4x version
-        """
-        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p,
-                                          p)  # B 3 C N -> B 3C h W
 
-        # ? nearest or bilinear
+        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p, p)
+
         x = self.conv_after_body(x) + x
         x = self.conv_before_upsample(x)
-        x = self.lrelu(
-            self.conv_up1(
-                torch.nn.functional.interpolate(
-                    x,
-                    scale_factor=2,
-                    mode='nearest',
-                    # align_corners=False,
-                    # antialias=True
-                )))
+        x = self.lrelu(self.conv_up1(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
         if self.upscale == 4:
-            x = self.lrelu(
-                self.conv_up2(
-                    torch.nn.functional.interpolate(
-                        x,
-                        scale_factor=2,
-                        mode='nearest',
-                        # align_corners=False,
-                        # antialias=True
-                    )))
+            x = self.lrelu(self.conv_up2(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
         x = self.conv_last(self.lrelu(self.conv_hr(x)))
 
         assert x.shape[-1] == self.input_resolution
@@ -1253,59 +956,31 @@ class RodinConv3D4X_lite_improved_lint_withresidual(nn.Module):
         assert in_chans == 4 * out_chans
         assert num_feat == 2 * out_chans
         self.input_resolution = input_resolution
-
-        # refer to https://github.com/JingyunLiang/SwinIR/blob/6545850fbf8df298df73d81f3e8cba638787c8bd/models/network_swinir.py#L750
         self.upscale = 4
 
-        self.conv_after_body = RodinRollOutConv3D_GroupConv(
-            in_chans, in_chans, 3, 1, 1)
+        self.conv_after_body = RodinRollOutConv3D_GroupConv(in_chans, in_chans, 3, 1, 1)
         self.conv_before_upsample = nn.Sequential(
             RodinRollOutConv3D_GroupConv(in_chans, num_feat, 3, 1, 1),
             nn.LeakyReLU(inplace=True))
-        self.conv_up1 = RodinRollOutConv3D_GroupConv(num_feat, num_feat, 3, 1,
-                                                     1)
+        self.conv_up1 = RodinRollOutConv3D_GroupConv(num_feat, num_feat, 3, 1, 1)
         if self.upscale == 4:
-            self.conv_up2 = RodinRollOutConv3D_GroupConv(
-                num_feat, num_feat, 3, 1, 1)
-        self.conv_hr = RodinRollOutConv3D_GroupConv(num_feat, num_feat, 3, 1,
-                                                    1)
-        self.conv_last = RodinRollOutConv3D_GroupConv(num_feat, out_chans, 3,
-                                                      1, 1)
+            self.conv_up2 = RodinRollOutConv3D_GroupConv(num_feat, num_feat, 3, 1, 1)
+        self.conv_hr = RodinRollOutConv3D_GroupConv(num_feat, num_feat, 3, 1, 1)
+        self.conv_last = RodinRollOutConv3D_GroupConv(num_feat, out_chans, 3, 1, 1)
 
         self.lrelu = nn.LeakyReLU(negative_slope=0.2, inplace=True)
 
     def forward(self, x):
-
-        # x: B 3 112*112 C
-        B, C3, p, p = x.shape  # after unpachify triplane
+        B, C3, p, p = x.shape
         C = C3 // 3
-        """following forward code copied from lite4x version
-        """
-        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p,
-                                          p)  # B 3 C N -> B 3C h W
 
-        # ? nearest or bilinear
+        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p, p)
+
         x = self.conv_after_body(x) + x
         x = self.conv_before_upsample(x)
-        x = self.lrelu(
-            self.conv_up1(
-                torch.nn.functional.interpolate(
-                    x,
-                    scale_factor=2,
-                    mode='nearest',
-                    # align_corners=False,
-                    # antialias=True
-                )))
+        x = self.lrelu(self.conv_up1(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
         if self.upscale == 4:
-            x = self.lrelu(
-                self.conv_up2(
-                    torch.nn.functional.interpolate(
-                        x,
-                        scale_factor=2,
-                        mode='nearest',
-                        # align_corners=False,
-                        # antialias=True
-                    )))
+            x = self.lrelu(self.conv_up2(torch.nn.functional.interpolate(x, scale_factor=2, mode='nearest')))
         x = self.conv_last(self.lrelu(self.conv_hr(x) + x))
 
         assert x.shape[-1] == self.input_resolution
@@ -1322,28 +997,23 @@ class RodinRollOutConv3DSR_FlexibleChannels(nn.Module):
                  **kwargs) -> None:
         super().__init__()
 
-        self.block0 = RodinConv3D_SynthesisLayer(in_chans,
-                                                 num_out_ch)  # in_chans=48
+        self.block0 = RodinConv3D_SynthesisLayer(in_chans, num_out_ch)
         self.block1 = RodinConv3D_SynthesisLayer(num_out_ch, num_out_ch)
-
-        self.input_resolution = input_resolution  # 64 -> 256 SR
+        self.input_resolution = input_resolution
 
     def forward(self, x):
-        # x: B 3 112*112 C
-        B, C3, p, p = x.shape  # after unpachify triplane
+        B, C3, p, p = x.shape
         C = C3 // 3
-        # group_size = C3 // C
 
-        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p,
-                                          p)  # B 3 C N -> B 3C h W
+        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p, p)
 
         if x.shape[-1] != self.input_resolution:
-            x = torch.nn.functional.interpolate(x,
-                                                size=(self.input_resolution,
-                                                      self.input_resolution),
-                                                mode='bilinear',
-                                                align_corners=False,
-                                                antialias=True)
+            x = torch.nn.functional.interpolate(
+                x,
+                size=(self.input_resolution, self.input_resolution),
+                mode='bilinear',
+                align_corners=False,
+                antialias=True)
 
         x = self.block0(x)
         x = self.block1(x)
@@ -1351,43 +1021,32 @@ class RodinRollOutConv3DSR_FlexibleChannels(nn.Module):
         return x
 
 
-# previous worked version
 class RodinRollOutConv3DSR4X(nn.Module):
-    # follow PixelUnshuffleUpsample
 
     def __init__(self, in_chans, **kwargs) -> None:
         super().__init__()
-        # self.block0 = RodinConv3D_SynthesisLayer(in_chans, 96 * 2) # TODO, match the old behaviour now.
-        # self.block1 = RodinConv3D_SynthesisLayer(96 * 2, 96)
-
         self.block0 = RodinConv3D_SynthesisLayer(in_chans, 96)
-        self.block1 = RodinConv3D_SynthesisLayer(
-            96, 96)  # baseline choice, validate with no LPIPS loss here
-
-        self.input_resolution = 64  # 64 -> 256
+        self.block1 = RodinConv3D_SynthesisLayer(96, 96)
+        self.input_resolution = 64
 
     def forward(self, x):
-        # x: B 3 112*112 C
-        B, C3, p, p = x.shape  # after unpachify triplane
+        B, C3, p, p = x.shape
         C = C3 // 3
-        # group_size = C3 // C
 
-        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p,
-                                          p)  # B 3 C N -> B 3C h W
+        x = x.permute(0, 1, 3, 2).reshape(B, 3 * C, p, p)
 
         if x.shape[-1] != self.input_resolution:
-            x = torch.nn.functional.interpolate(x,
-                                                size=(self.input_resolution,
-                                                      self.input_resolution),
-                                                mode='bilinear',
-                                                align_corners=False,
-                                                antialias=True)
+            x = torch.nn.functional.interpolate(
+                x,
+                size=(self.input_resolution, self.input_resolution),
+                mode='bilinear',
+                align_corners=False,
+                antialias=True)
 
         x = self.block0(x)
         x = self.block1(x)
 
         return x
-
 
 class Upsample3D(nn.Module):
     """Upsample module.
@@ -1398,13 +1057,15 @@ class Upsample3D(nn.Module):
 
     def __init__(self, scale, num_feat):
         super().__init__()
-
+        
         m_convs = []
         m_pixelshuffle = []
 
+        # Scale must be power of 2
         assert (scale & (scale - 1)) == 0, 'scale = 2^n'
         self.scale = scale
 
+        # Create conv + pixel shuffle layers for each 2x upscale step
         for _ in range(int(math.log(scale, 2))):
             m_convs.append(
                 RodinRollOutConv3D_GroupConv(num_feat, 4 * num_feat, 3, 1, 1))
@@ -1413,13 +1074,16 @@ class Upsample3D(nn.Module):
         self.m_convs = nn.ModuleList(m_convs)
         self.m_pixelshuffle = nn.ModuleList(m_pixelshuffle)
 
-    # @torch.autocast(device_type='cuda')
     def forward(self, x):
+        # Perform upsampling in multiple 2x steps
         for scale_idx in range(int(math.log(self.scale, 2))):
+            # 1. Conv to expand channels
             x = self.m_convs[scale_idx](x)  # B 3C H W
-            # x =
-            # B, C3, H, W = x.shape
+            
+            # 2. Reshape to separate 3 planes
             x = x.reshape(x.shape[0] * 3, x.shape[1] // 3, *x.shape[2:])
+            
+            # 3. Pixel shuffle upsampling
             x = self.m_pixelshuffle[scale_idx](x)
             x = x.reshape(x.shape[0] // 3, x.shape[1] * 3, *x.shape[2:])
 
@@ -1789,9 +1453,6 @@ class TriplaneFusionBlock(nn.Module):
         if self.fusion is None:
             return x.view(B, group_size, N, C)
 
-        # outs_b = x.view(B, group_size, N,
-        #                 C).chunk(chunks=3,
-        #                          dim=1)  # 3 * [B, 1, N//3, C] Tensors, for fusion
 
         outs_b = x.chunk(chunks=3,
                          dim=0)  # 3 * [B, N//3, C] Tensors, for fusion
@@ -1868,7 +1529,6 @@ class TriplaneFusionBlockv2(nn.Module):
         """x: B 3 N C, where N = H*W tokens
         """
 
-        # self attention, by merging the triplane channel into B for parallel computation
 
         # ! move the below to the front of the first call
         B, group_size, N, C = x.shape  # has [cls] token in N
@@ -1882,7 +1542,6 @@ class TriplaneFusionBlockv2(nn.Module):
             return x.reshape(B, group_size, N, C)
 
         x = x.reshape(B, group_size, N, C)  # .chunk(chunks=3,
-        #  dim=1)  # 3 * [B, N//3, C] Tensors, for fusion
         return self.fusion(x)
 
 
@@ -1982,7 +1641,6 @@ class TriplaneFusionBlockv4_nested(nn.Module):
             mlp_ratio=mlp_ratio,
             qkv_bias=qkv_bias,
             qk_scale=qk_scale,
-            # drop=drop,
             drop=proj_drop,
             attn_drop=attn_drop,
             drop_path=drop_path_rate,

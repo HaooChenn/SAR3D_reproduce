@@ -24,10 +24,6 @@ from nsr.script_util import create_3DAE_model, create_3DAE_model_mesh
 def build_vae_var_3D_VAR(
     device,
     patch_nums=(1, 2, 3, 4, 5, 6, 8, 10, 13, 16),   # Progressive training steps
-    V=4096,              # VQVAE vocabulary size
-    Cvae=32,             # VQVAE latent channels
-    ch=160,              # VQVAE base channels
-    share_quant_resi=4,  # Share quantization residuals
     num_classes=1000,    # Number of classes
     depth=16,            # Transformer depth
     shared_aln=False,    # Share AdaLN layers
@@ -46,10 +42,9 @@ def build_vae_var_3D_VAR(
     Args:
         device: Device to place models on
         patch_nums: Progressive training patch sizes
-        V, Cvae, ch: VQVAE architecture parameters
         num_classes: Number of output classes
         depth: Transformer depth
-        shared_aln, attn_l2_norm: Attention parameters
+        attn_l2_norm: Attention parameters
         flash_if_available, fused_if_available: Optimization flags
         init_*: Initialization parameters
         args: Additional configuration arguments

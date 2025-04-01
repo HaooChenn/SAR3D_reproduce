@@ -6,7 +6,7 @@ import torch
 import torch.nn as nn
 from huggingface_hub import PyTorchModelHubMixin
 
-import dist
+import utils.dist as dist
 from models.basic_var import AdaLNBeforeHead, AdaLNSelfAttn, AdaLNCrossSelfAttn_Image_new
 from models.helpers import gumbel_softmax_with_rng, sample_with_top_k_top_p_
 from models.vqvae import VQVAE, VectorQuantizer2

@@ -4,7 +4,7 @@ from typing import Tuple, List, Dict, Union
 
 import torch.nn
 
-import dist
+import utils.dist as dist
 from ipdb import set_trace as st
 
 

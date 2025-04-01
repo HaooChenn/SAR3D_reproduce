@@ -13,7 +13,7 @@ import pytz
 import torch
 import torch.distributed as tdist
 
-import dist
+import utils.dist as dist
 from utils import arg_util
 from ipdb import set_trace as st
 
