@@ -26,3 +26,5 @@ eval*
 *sample*
 ten_scale/
 baseline/
+*.sh
+.vscode/

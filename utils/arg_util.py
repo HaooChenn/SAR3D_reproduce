@@ -283,6 +283,7 @@ class Args(Tap):
     # data_dir: str = '/mnt/slurm_home/ywchen/data/datasets/objv_chunk_v=6/bs_12_shuffle/170K/256'
     data_dir: str = ''
     LN3DiffConfig = Dict_to_class(**LN3Diff_kwargs)
+    ar_ckpt_path: str = None
 
 
     
@@ -372,8 +373,9 @@ def init_dist_and_get_args():
         args.pg = 0.8
         args.pg0 = 1
     else:
-        if args.data_path == '/path/to/imagenet':
-            raise ValueError(f'{"*"*40}  please specify --data_path=/path/to/imagenet  {"*"*40}')
+        pass
+        # if args.data_path == '/path/to/imagenet':
+        #     raise ValueError(f'{"*"*40}  please specify --data_path=/path/to/imagenet  {"*"*40}')
     
     # warn args.extra_args
     if len(args.extra_args) > 0:
