@@ -7,12 +7,10 @@ import torch.nn
 import utils.dist as dist
 from ipdb import set_trace as st
 
-
 def lr_wd_annealing(sche_type: str, optimizer, peak_lr, wd, wd_end, cur_it, wp_it, max_it, wp0=0.005, wpe=0.001):
     """Decay the learning rate with half-cycle cosine after warmup"""
     wp_it = round(wp_it)
     
-    # st()
     if cur_it < wp_it:
         cur_lr = wp0 + (1-wp0) * cur_it / wp_it
     else:
@@ -46,8 +44,6 @@ def lr_wd_annealing(sche_type: str, optimizer, peak_lr, wd, wd_end, cur_it, wp_i
             raise NotImplementedError(f'unknown sche_type {sche_type}')
     
     cur_lr *= peak_lr
-    # FIXME: This means no warm up here
-    # cur_lr = peak_lr
     pasd = cur_it / (max_it-1)
     cur_wd = wd_end + (wd - wd_end) * (0.5 + 0.5 * math.cos(math.pi * pasd))
     
@@ -67,8 +63,6 @@ def lr_wd_annealing(sche_type: str, optimizer, peak_lr, wd, wd_end, cur_it, wp_i
     if min_lr == inf: min_lr = -1
     if min_wd == inf: min_wd = -1
     return min_lr, max_lr, min_wd, max_wd
-
-
 def filter_params(model, nowd_keys=()) -> Tuple[
     List[str], List[torch.nn.Parameter], List[Dict[str, Union[torch.nn.Parameter, float]]]
 ]:

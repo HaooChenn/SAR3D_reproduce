@@ -756,10 +756,6 @@ class PostProcess:
 
 def chunk_collate_fn(sample):
     sample = torch.utils.data.default_collate(sample)
-    # st()
-    # ! change from stack to cat
-    # sample = self.post_process.prepare_mv_input(sample)
-    # st()
     if 'caption' in sample:
         bs = len(sample['caption'])  # number of instances
         chunk_size = sample['img'].shape[0] // bs

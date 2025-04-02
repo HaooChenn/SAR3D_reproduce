@@ -158,10 +158,10 @@ class VARTrainer(object):
             # Get DINO embeddings
             pooler_output = data["image_dino_pooler_output"].to(dist.get_device(), non_blocking=True)
             dino_embeddings = data["image_dino_embedding"].to(dist.get_device(), non_blocking=True)
-            caption = data["caption"]
+            caption = None
             
             with torch.inference_mode():
-                triplane = self.var_wo_ddp.autoregressive_infer_cfg_3D_VAR_image_l2norm(
+                triplane, _ = self.var_wo_ddp.autoregressive_infer_cfg_3D_VAR_image_l2norm(
                     B=B, dino_image_embeddings=dino_embeddings, pooler_output=pooler_output, 
                     cfg=cfg, top_k=900, top_p=0.95, more_smooth=more_smooth
                 )

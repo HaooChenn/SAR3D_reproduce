@@ -76,8 +76,7 @@ def build_everything(args: arg_util.Args):
             plucker_embedding=args.LN3DiffConfig.plucker_embedding,
             use_chunk=True,
             eval=True,
-            # load_whole=True,
-            load_whole=False,
+            load_whole=True,
         )
 
         # Build training loader 
@@ -104,7 +103,7 @@ def build_everything(args: arg_util.Args):
         print(f'[dataloader multi processing] ...', end='', flush=True)
         stt = time.time()
 
-        iters_train = int(len(ld_train) / args.batch_size)
+        iters_train = int(10 / args.batch_size)
         print("iters_train", iters_train)
 
         ld_train = infinite_loader(ld_train)
@@ -306,21 +305,25 @@ def main_training():
                 triplane, caption, data_eval = trainer.eval_ep_3D_VAR(ld_val)
                 save_img = []
                 
+                
                 # Render images from triplane representation
                 with torch.inference_mode():
                     for i in range(min(triplane.shape[0],4)):
                         triplane_i = triplane[i].unsqueeze(0)
                         camera = data_eval['nv_c'][12*i:12*(i+1)].to(dist.get_rank())
-                        
                         # Generate predictions
-                        pred = trainer.vae_local(
-                            latent={
-                                'latent_after_vit': triplane_i.to(torch.float32).repeat_interleave(6, dim=0).repeat(2,1,1,1)
-                            },
-                            c=camera,
-                            behaviour='triplane_dec'
-                        )
-                        
+                        image_raw = []
+                        for j in range(camera.shape[0]):
+                            camera_j = camera[j].unsqueeze(0)
+                            pred = trainer.vae_local(
+                                latent={
+                                    'latent_after_vit': triplane_i.repeat_interleave(6, dim=0).to(torch.float32).repeat(2,1,1,1)
+                                },
+                                c=camera_j,
+                                behaviour='triplane_dec'
+                            )
+                            image_raw.append(pred['image_raw'])
+                        pred['image_raw'] = torch.cat(image_raw, dim=0)
                         # Combine with ground truth for visualization
                         gt_img = data_eval['nv_img'][12*i:12*(i+1)]
                         save_img_i = torch.cat([pred['image_raw'][0:6], gt_img[0:6].to(pred['image_raw'].device)], dim=2)
@@ -421,11 +424,10 @@ def train_one_ep(ep: int, is_first_ep: bool, start_it: int, args: arg_util.Args,
         args.cur_it = f'{it+1}/{iters_train}'
         
         # Learning rate scheduling
-        wp_it = 5000
+        wp_it = args.wp * iters_train
         min_tlr, max_tlr, min_twd, max_twd = lr_wd_annealing(
-            args.sche, trainer.var_opt.optimizer, args.tlr, args.twd, 
-            args.twde, g_it, wp_it, max_it, wp0=args.wp0, wpe=args.wpe
-        )
+            args.sche, trainer.var_opt.optimizer, args.tlr, 
+            args.twd, args.twde, g_it, wp_it, max_it, wp0=args.wp0, wpe=args.wpe)
         args.cur_lr, args.cur_wd = max_tlr, max_twd
         
         # Progressive training (if enabled)

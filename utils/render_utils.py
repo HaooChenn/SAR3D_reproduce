@@ -119,7 +119,7 @@ def render_video_given_triplane(planes,
         
         # Generate frame from tri-planes
         pred = rec_model(
-            latent={'latent_after_vit': ddpm_latent['latent_after_vit'].repeat_interleave(6, dim=0).repeat(2,1,1,1)},
+            latent={'latent_after_vit': ddpm_latent['latent_after_vit'].repeat_interleave(6, dim=0).to(torch.float32).repeat(2,1,1,1)},
             c=micro['c'],
             behaviour='triplane_dec')
         
