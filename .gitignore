@@ -27,3 +27,4 @@ ten_scale/
 baseline/
 *.sh
 .vscode/
+./checkpoint
