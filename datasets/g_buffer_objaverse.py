@@ -11,12 +11,8 @@ from pdb import set_trace as st
 from pathlib import Path
 
 from einops import rearrange
-from scipy.stats import special_ortho_group
-import gzip
 import random
 import torch
-from torch import nn
-import torch.nn.functional as F
 from torch.utils.data import DataLoader, Dataset
 from torchvision import transforms
 from torch.utils.data.distributed import DistributedSampler
@@ -32,20 +28,7 @@ from utils.general_utils import matrix_to_quaternion
 from guided_diffusion import logger
 import json
 
-
-from .shapenet import decompress_and_open_image_gzip, decompress_array
-
 from utils.gs_utils.graphics_utils import getWorld2View2, getProjectionMatrix, getView2World
-
-def random_rotation_matrix():
-    # Generate a random rotation matrix in 3D
-    random_rotation_3d = special_ortho_group.rvs(3)
-
-    # Embed the 3x3 rotation matrix into a 4x4 matrix
-    rotation_matrix_4x4 = np.eye(4)
-    rotation_matrix_4x4[:3, :3] = random_rotation_3d
-
-    return rotation_matrix_4x4
 
 def fov2focal(fov, pixels):
     return pixels / (2 * math.tan(fov / 2))
@@ -551,54 +534,6 @@ class PostProcess:
             'ins': sample[-1]
         }
 
-    def decode_zip(
-        self,
-        sample_pyd,
-    ):
-        shape = (self.reso_encoder, self.reso_encoder)
-        if isinstance(sample_pyd, tuple):
-            sample_pyd = sample_pyd[0]
-        assert isinstance(sample_pyd, dict)
-
-        raw_img = decompress_and_open_image_gzip(
-            sample_pyd['raw_img'],
-            is_img=True,
-            decompress=True,
-            decompress_fn=lz4.frame.decompress)
-
-        caption = sample_pyd['caption'].decode('utf-8')
-        ins = sample_pyd['ins'].decode('utf-8')
-
-        c = decompress_array(sample_pyd['c'], (
-            self.chunk_size,
-            25,
-        ),
-                             np.float32,
-                             decompress=True,
-                             decompress_fn=lz4.frame.decompress)
-
-        bbox = decompress_array(
-            sample_pyd['bbox'],
-            (
-                self.chunk_size,
-                4,
-            ),
-            np.float32,
-            decompress=True,
-            decompress_fn=lz4.frame.decompress)
-
-        if self.decode_encode_img_only:
-            depth = np.zeros(shape=(self.chunk_size,
-                                    *shape))
-        else:
-            depth = decompress_array(sample_pyd['depth'],
-                                     (self.chunk_size, *shape),
-                                     np.float32,
-                                     decompress=True,
-                                     decompress_fn=lz4.frame.decompress)
-
-        return raw_img, depth, c, bbox, caption, ins
-
     def create_dict_nobatch(self, sample):
         sample_length = 6
         cano_sample_list = [[] for _ in range(sample_length)]
@@ -787,12 +722,104 @@ def chunk_collate_fn(sample):
     return sample
 
 
+def optimize_data_loading(loader, batch_size, num_workers=None):
+    """
+    Optimize data loading settings for better performance
+    
+    Args:
+        loader: DataLoader instance
+        batch_size: Batch size for training
+        num_workers: Number of data loading workers (optional)
+    """
+    # Calculate optimal number of workers if not specified
+    if num_workers is None:
+        num_workers = min(multiprocessing.cpu_count(), torch.cuda.device_count() * 4)
+        num_workers = max(1, num_workers)
+        print(f"Using {num_workers} workers for data loading")
+    
+    # Optimize DataLoader settings
+    loader.num_workers = num_workers
+    loader.prefetch_factor = 4  # Increase prefetch factor for better throughput
+    loader.pin_memory = True    # Enable pinned memory for faster GPU transfer
+    loader.persistent_workers = True  # Keep workers alive between epochs
+    
+    return loader
+
+def monitor_loading_performance(loader):
+    """
+    Monitor data loading performance metrics
+    
+    Args:
+        loader: DataLoader instance
+    """
+    import time
+    start_time = time.time()
+    data_times = []
+    gpu_utils = []
+    
+    for i, batch in enumerate(loader):
+        if i == 0:  # Skip first batch (warmup)
+            continue
+            
+        batch_time = time.time() - start_time
+        data_times.append(batch_time)
+        gpu_utils.append(torch.cuda.utilization())
+        start_time = time.time()
+        
+        if i >= 10:  # Collect data for 10 batches
+            break
+    
+    avg_time = sum(data_times) / len(data_times)
+    avg_gpu_util = sum(gpu_utils) / len(gpu_utils)
+    
+    print(f"Data Loading Performance:")
+    print(f"Average loading time per batch: {avg_time:.3f}s")
+    print(f"Average GPU utilization: {avg_gpu_util:.2f}%")
+    
+    return avg_time, avg_gpu_util
+
+def optimize_chunk_loading(chunk_path, img_ext='png'):
+    """
+    Optimize loading of data chunks for better performance
+    
+    Args:
+        chunk_path: Path to data chunk
+        img_ext: Image extension
+        
+    Returns:
+        Optimized data tensors
+    """
+    # Load raw image with optimized settings
+    raw_img = imageio.imread(os.path.join(chunk_path, f'raw_img.{img_ext}'))
+    h, bw, c = raw_img.shape
+    
+    # Reshape efficiently
+    raw_img = raw_img.reshape(h, 12, -1, c).transpose(1, 0, 2, 3)
+    
+    # Load depth and alpha with optimized settings
+    depth_alpha = imageio.imread(os.path.join(chunk_path, 'depth_alpha.jpg'))
+    depth_alpha = depth_alpha.reshape(h * 2, 12, -1).transpose(1, 0, 2)
+    depth, alpha = np.split(depth_alpha, 2, axis=1)
+    
+    # Load camera parameters and bounding boxes efficiently
+    c = np.load(os.path.join(chunk_path, 'c.npy'))
+    d_near_far = np.load(os.path.join(chunk_path, 'd_near_far.npy'))
+    bbox = np.load(os.path.join(chunk_path, 'bbox.npy'))
+    
+    # Process depth values efficiently
+    d_near = d_near_far[0].reshape(12, 1, 1)
+    d_far = d_near_far[1].reshape(12, 1, 1)
+    depth = 1 / ((depth / 255) * (d_far - d_near) + d_near)
+    depth[depth > 2.9] = 0.0
+    
+    return raw_img, depth, c, alpha, bbox
+
 def load_data_3D_VAR(
         file_path="",
         reso=64,
         reso_encoder=224,
         batch_size=1,
-        num_workers=6,
+        num_workers=1,
         load_depth=False,
         preprocess=None,
         imgnet_normalize=True,
@@ -975,10 +1002,19 @@ class ChunkObjaverseDataset(Dataset):
 
         # Load dataset json
         dataset_json = []
-        categories = ['Animals'] # Currently only loading Animals category
+        categories = [
+                    'Furnitures',
+                    'daily-used',
+                    'Animals',
+                    'Food',
+                    'Plants',
+                    'Electronics',
+                    'BuildingsOutdoor',
+                    'Transportations_tar',
+                    'Human-Shape',]
         for category in categories:
             with open(f'{self.file_path}/dataset.json', 'r') as f:
-                category_data = json.load(f)[category][::4] # Take every 4th sample
+                category_data = json.load(f)[category][:-100]
                 dataset_json.extend(category_data)
 
         # Build chunk list
@@ -1159,7 +1195,16 @@ class ChunkObjaverseDataset_eval(Dataset):
 
         # Load dataset json
         dataset_json = []
-        for cl in ['Animals']:
+        for cl in [
+                    'Furnitures',
+                    'daily-used',
+                    'Animals',
+                    'Food',
+                    'Plants',
+                    'Electronics',
+                    'BuildingsOutdoor',
+                    'Transportations_tar',
+                    'Human-Shape',]:
             with open(f'{self.file_path}/dataset.json', 'r') as f:
                 cl_dataset_json = json.load(f)[cl][-100:]
             dataset_json.extend(cl_dataset_json)

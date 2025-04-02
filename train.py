@@ -95,15 +95,13 @@ def build_everything(args: arg_util.Args):
             use_lmdb_compressed=args.LN3DiffConfig.use_lmdb_compressed,
             plucker_embedding=args.LN3DiffConfig.plucker_embedding,
             use_chunk=True,
-            # load_whole=True,
-            load_whole=False,
+            load_whole=True,
         )
 
         [print(line) for line in auto_resume_info]
         print(f'[dataloader multi processing] ...', end='', flush=True)
         stt = time.time()
-
-        iters_train = int(10 / args.batch_size)
+        iters_train = int( len(ld_train.dataset) / (args.batch_size * dist.get_world_size()))
         print("iters_train", iters_train)
 
         ld_train = infinite_loader(ld_train)
@@ -134,6 +132,7 @@ def build_everything(args: arg_util.Args):
     # Compile models if enabled
     vae_local: VQVAE = args.compile_model(vae_local, args.vfast)
     var_wo_ddp: VAR = args.compile_model(var_wo_ddp, args.tfast)
+    print("Multiple GPUs:", dist.initialized())
     var: DDP = (DDP if dist.initialized() else NullDDP)(var_wo_ddp, device_ids=[dist.get_local_rank()], find_unused_parameters=False, broadcast_buffers=False)
     
     print(f'[INIT] VAR model = {var_wo_ddp}\n\n')

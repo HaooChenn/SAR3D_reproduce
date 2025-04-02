@@ -273,7 +273,7 @@ class Args(Tap):
         'depth': 6,
         'sr_ratio': 2,
         'ldm_embed_dim': 4,
-        'num_workers': 6,
+        'num_workers': 16,
         'dataset_size': -1,
         }
 
