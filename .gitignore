@@ -17,7 +17,6 @@ sample_*
 *.pth.tar
 *.ckpt
 *.log
-*.txt
 *.ipynb
 *huggingface*
 *.locks*
