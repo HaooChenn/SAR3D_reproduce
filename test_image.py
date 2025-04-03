@@ -155,23 +155,25 @@ def main_test():
 def preprocess_image(png_file: str, save_dir: str) -> Image:
     """Helper function to load and preprocess input image"""
     img = Image.open(png_file)
-    if img.mode == "RGBA":
-        # Handle RGBA by adding white background
-        bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
-        bg.paste(img, mask=img)
-        img = bg.convert('RGB')
-    
-    # Crop to square if not already square
     w, h = img.size
-    if w != h:
-        # Take center crop
-        size = min(w, h)
-        left = (w - size) // 2
-        top = (h - size) // 2
-        right = left + size
-        bottom = top + size
-        img = img.crop((left, top, right, bottom))
     
+    # Make square by padding with white background
+    size = max(w, h)
+    if img.mode == "RGBA":
+        # For RGBA images, create white background and paste original with alpha
+        bg = Image.new("RGBA", (size, size), (255, 255, 255, 255))
+        left = (size - w) // 2
+        top = (size - h) // 2
+        bg.paste(img, (left, top), mask=img)
+        img = bg.convert('RGB')
+    else:
+        # For RGB images, create white background and paste original
+        bg = Image.new("RGB", (size, size), (255, 255, 255))
+        left = (size - w) // 2
+        top = (size - h) // 2
+        bg.paste(img, (left, top))
+        img = bg
+
     img = img.resize((256, 256))
     img.save(os.path.join(save_dir, "input.png"))
     return img
@@ -208,7 +210,7 @@ def generate_triplane(sar3d, dino_feats):
 def render_results(args, sar3d, triplane, g_BL, name, save_dir):
     """Helper function to render 3D reconstruction results"""
     # Load and transform camera parameters
-    camera = torch.load("./files/camera.pt").cpu()
+    camera = torch.load("./files/camera.pt").cpu()[0:24]
     rot = get_camera_rotation(args.flexicubes)
     camera = transform_camera(camera, rot)
 

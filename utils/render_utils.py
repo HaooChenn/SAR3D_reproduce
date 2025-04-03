@@ -109,7 +109,7 @@ def render_video_given_triplane(planes,
                 render_reference.pop(key)
 
         render_reference = [{k: v[idx:idx + 1] for k, v in render_reference.items()} 
-                          for idx in range(40)]
+                          for idx in range(len(next(iter(render_reference.values()))))]
 
     # Render frames
     for i, batch in enumerate(tqdm(render_reference)):
@@ -212,7 +212,7 @@ def render_video_given_triplane_mesh(planes,
             if key in render_reference:
                 render_reference.pop(key)
         render_reference = [{k: v[idx:idx + 1] for k, v in render_reference.items()} 
-                          for idx in range(40)]
+                          for idx in range(len(next(iter(render_reference.values()))))]
 
     # Render frames
     for i, batch in enumerate(tqdm(render_reference)):

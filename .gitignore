@@ -28,3 +28,5 @@ baseline/
 checkpoint/
 submit*.sh
 checkpoints/
+debug_*.sh
+./test_image/
