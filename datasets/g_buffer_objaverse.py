@@ -4,7 +4,7 @@ import time
 from typing import Any
 import cv2
 cv2.setNumThreads(0) # disable multiprocess
-import imageio
+import imageio.v2 as imageio
 import numpy as np
 from PIL import Image
 from pdb import set_trace as st
@@ -721,99 +721,6 @@ def chunk_collate_fn(sample):
 
     return sample
 
-
-def optimize_data_loading(loader, batch_size, num_workers=None):
-    """
-    Optimize data loading settings for better performance
-    
-    Args:
-        loader: DataLoader instance
-        batch_size: Batch size for training
-        num_workers: Number of data loading workers (optional)
-    """
-    # Calculate optimal number of workers if not specified
-    if num_workers is None:
-        num_workers = min(multiprocessing.cpu_count(), torch.cuda.device_count() * 4)
-        num_workers = max(1, num_workers)
-        print(f"Using {num_workers} workers for data loading")
-    
-    # Optimize DataLoader settings
-    loader.num_workers = num_workers
-    loader.prefetch_factor = 4  # Increase prefetch factor for better throughput
-    loader.pin_memory = True    # Enable pinned memory for faster GPU transfer
-    loader.persistent_workers = True  # Keep workers alive between epochs
-    
-    return loader
-
-def monitor_loading_performance(loader):
-    """
-    Monitor data loading performance metrics
-    
-    Args:
-        loader: DataLoader instance
-    """
-    import time
-    start_time = time.time()
-    data_times = []
-    gpu_utils = []
-    
-    for i, batch in enumerate(loader):
-        if i == 0:  # Skip first batch (warmup)
-            continue
-            
-        batch_time = time.time() - start_time
-        data_times.append(batch_time)
-        gpu_utils.append(torch.cuda.utilization())
-        start_time = time.time()
-        
-        if i >= 10:  # Collect data for 10 batches
-            break
-    
-    avg_time = sum(data_times) / len(data_times)
-    avg_gpu_util = sum(gpu_utils) / len(gpu_utils)
-    
-    print(f"Data Loading Performance:")
-    print(f"Average loading time per batch: {avg_time:.3f}s")
-    print(f"Average GPU utilization: {avg_gpu_util:.2f}%")
-    
-    return avg_time, avg_gpu_util
-
-def optimize_chunk_loading(chunk_path, img_ext='png'):
-    """
-    Optimize loading of data chunks for better performance
-    
-    Args:
-        chunk_path: Path to data chunk
-        img_ext: Image extension
-        
-    Returns:
-        Optimized data tensors
-    """
-    # Load raw image with optimized settings
-    raw_img = imageio.imread(os.path.join(chunk_path, f'raw_img.{img_ext}'))
-    h, bw, c = raw_img.shape
-    
-    # Reshape efficiently
-    raw_img = raw_img.reshape(h, 12, -1, c).transpose(1, 0, 2, 3)
-    
-    # Load depth and alpha with optimized settings
-    depth_alpha = imageio.imread(os.path.join(chunk_path, 'depth_alpha.jpg'))
-    depth_alpha = depth_alpha.reshape(h * 2, 12, -1).transpose(1, 0, 2)
-    depth, alpha = np.split(depth_alpha, 2, axis=1)
-    
-    # Load camera parameters and bounding boxes efficiently
-    c = np.load(os.path.join(chunk_path, 'c.npy'))
-    d_near_far = np.load(os.path.join(chunk_path, 'd_near_far.npy'))
-    bbox = np.load(os.path.join(chunk_path, 'bbox.npy'))
-    
-    # Process depth values efficiently
-    d_near = d_near_far[0].reshape(12, 1, 1)
-    d_far = d_near_far[1].reshape(12, 1, 1)
-    depth = 1 / ((depth / 255) * (d_far - d_near) + d_near)
-    depth[depth > 2.9] = 0.0
-    
-    return raw_img, depth, c, alpha, bbox
-
 def load_data_3D_VAR(
         file_path="",
         reso=64,
@@ -1279,14 +1186,14 @@ class ChunkObjaverseDataset_eval(Dataset):
             x_BLCv_wo_first_l = torch.from_numpy(np.load(os.path.join(latent_path, "x_BLCv_wo_first_l_dim_8_l2_norm_lrm_256.npy")))
             image_dino_embedding = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_embedding_lrm.npy")))[1:, :]
             image_dino_pooler_output = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_pooler_output_lrm.npy")))
-            single_image = torch.from_numpy(np.array(Image.open(os.path.join(latent_path, "single_image.png"))))
+            # single_image = torch.from_numpy(np.array(Image.open(os.path.join(latent_path, "single_image.png"))))
 
             sample.update({
                 'gt_BL': gt_BL,
                 'x_BLCv_wo_first_l': x_BLCv_wo_first_l,
                 'image_dino_pooler_output': image_dino_pooler_output,
                 'image_dino_embedding': image_dino_embedding,
-                'single_image': single_image
+                # 'single_image': single_image
             })
         else:
             raise NotImplementedError(os.path.join(latent_path, "gt_BL_dim_8_l2norm_lrm_256.npy"))

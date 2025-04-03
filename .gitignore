@@ -24,6 +24,7 @@ sample_*
 eval*
 ten_scale/
 baseline/
-*.sh
 .vscode/
 checkpoint/
+submit*.sh
+checkpoints/

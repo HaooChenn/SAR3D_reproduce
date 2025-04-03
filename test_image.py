@@ -39,6 +39,16 @@ def build_everything(args: arg_util.Args):
         trainer: Initialized SAR3D trainer with loaded weights
     """
     # Load model checkpoints
+    # Check if AR checkpoint exists
+    if dist.is_local_master() and not os.path.exists(args.ar_ckpt_path):
+        print(f"AR checkpoint not found at {args.ar_ckpt_path}, downloading from huggingface...")
+        from huggingface_hub import hf_hub_download
+        args.ar_ckpt_path = hf_hub_download(
+            repo_id="cyw-3d/sar3d",
+            filename="image-condition-ckpt.pth", 
+            cache_dir="./checkpoints"
+        )
+        print(f"Downloaded AR checkpoint to {args.ar_ckpt_path}")
     ckpt_state = torch.load(args.ar_ckpt_path, map_location='cpu')['trainer']
     
     # Build models
@@ -59,7 +69,14 @@ def build_everything(args: arg_util.Args):
     # Load VAE weights
     vae_ckpt = args.vqvae_pretrained_path
     if dist.is_local_master() and not os.path.exists(vae_ckpt):
-        raise FileNotFoundError(f"VAE checkpoint not found at {vae_ckpt}")
+        print(f"VAE checkpoint not found at {vae_ckpt}, downloading from huggingface...")
+        from huggingface_hub import hf_hub_download
+        vae_ckpt = hf_hub_download(
+            repo_id="cyw-3d/sar3d",
+            filename="vqvae-ckpt.pt",
+            cache_dir="./checkpoints"
+        )
+        print(f"Downloaded VAE checkpoint to {vae_ckpt}")
     
     vae_local.load_state_dict(torch.load(vae_ckpt, map_location='cpu'), strict=True)
 
@@ -112,7 +129,7 @@ def main_test():
     # Get input images
     png_files = [
         os.path.join(root, f) 
-        for root, _, files in os.walk("./test_images")
+        for root, _, files in os.walk(args.test_image_path)
         for f in files if f.endswith('.png')
     ]
     print(f"Found {len(png_files)} images to process")
@@ -143,6 +160,17 @@ def preprocess_image(png_file: str, save_dir: str) -> Image:
         bg = Image.new("RGBA", img.size, (255, 255, 255, 255))
         bg.paste(img, mask=img)
         img = bg.convert('RGB')
+    
+    # Crop to square if not already square
+    w, h = img.size
+    if w != h:
+        # Take center crop
+        size = min(w, h)
+        left = (w - size) // 2
+        top = (h - size) // 2
+        right = left + size
+        bottom = top + size
+        img = img.crop((left, top, right, bottom))
     
     img = img.resize((256, 256))
     img.save(os.path.join(save_dir, "input.png"))
@@ -180,7 +208,7 @@ def generate_triplane(sar3d, dino_feats):
 def render_results(args, sar3d, triplane, g_BL, name, save_dir):
     """Helper function to render 3D reconstruction results"""
     # Load and transform camera parameters
-    camera = torch.load("./camera.pt").cpu()
+    camera = torch.load("./files/camera.pt").cpu()
     rot = get_camera_rotation(args.flexicubes)
     camera = transform_camera(camera, rot)
 

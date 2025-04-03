@@ -29,6 +29,7 @@ class Dict_to_class:
 class Args(Tap):
     data_path: str = '/path/to/imagenet'
     exp_name: str = 'text'
+    test_image_path: str = None
     
     # VAE
     vfast: int = 0      # torch.compile VAE; =0: not compile; 1: compile with 'reduce-overhead'; 2: compile with 'max-autotune'
@@ -78,7 +79,7 @@ class Args(Tap):
     data_load_reso: int = None  # [automatically set; don't specify this] would be max(patch_nums) * patch_size
     mid_reso: float = 1.125     # aug: first resize to mid_reso = 1.125 * data_load_reso, then crop to data_load_reso
     hflip: bool = False         # augmentation: horizontal flip
-    workers: int = 0        # num workers; 0: auto, -1: don't use multiprocessing in DataLoader
+    num_workers: int = 0        # num workers; 0: auto, -1: don't use multiprocessing in DataLoader
     
     # progressive training
     pg: float = 0.0         # >0 for use progressive training during [0%, this] of training
@@ -273,14 +274,12 @@ class Args(Tap):
         'depth': 6,
         'sr_ratio': 2,
         'ldm_embed_dim': 4,
-        'num_workers': 16,
         'dataset_size': -1,
         }
 
     
     # added by ywchen
     vqvae_pretrained_path: str = None
-    # data_dir: str = '/mnt/slurm_home/ywchen/data/datasets/objv_chunk_v=6/bs_12_shuffle/170K/256'
     data_dir: str = ''
     LN3DiffConfig = Dict_to_class(**LN3Diff_kwargs)
     ar_ckpt_path: str = None
@@ -299,7 +298,6 @@ class Args(Tap):
     
     def state_dict(self, key_ordered=True) -> Union[OrderedDict, dict]:
         d = (OrderedDict if key_ordered else dict)()
-        # self.as_dict() would contain methods, but we only need variables
         for k in self.class_variables.keys():
             if k not in {'device'}:     # these are not serializable
                 d[k] = getattr(self, k)
@@ -409,12 +407,10 @@ def init_dist_and_get_args():
     bs_per_gpu = round(args.bs / args.ac / dist.get_world_size())
     args.batch_size = bs_per_gpu
     args.bs = args.glb_batch_size = args.batch_size * dist.get_world_size()
-    args.workers = min(max(0, args.workers), args.batch_size)
+    args.num_workers = min(max(0, args.num_workers), args.batch_size)
     
     # args.tlr = args.ac * args.tblr * args.glb_batch_size / 256
     args.tlr = args.tblr
-    # from ipdb import set_trace; set_trace()
-    # st()
     args.twde = args.twde or args.twd
     
     if args.wp == 0:

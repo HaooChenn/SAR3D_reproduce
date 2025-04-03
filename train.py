@@ -65,7 +65,7 @@ def build_everything(args: arg_util.Args):
             batch_size=args.batch_size,
             reso=args.LN3DiffConfig.image_size,
             reso_encoder=args.LN3DiffConfig.image_size_encoder,
-            num_workers=args.LN3DiffConfig.num_workers,
+            num_workers=args.num_workers,
             load_depth=True,
             preprocess=vae_local.preprocess,
             dataset_size=args.LN3DiffConfig.dataset_size,
@@ -85,7 +85,7 @@ def build_everything(args: arg_util.Args):
             batch_size=args.batch_size,
             reso=args.LN3DiffConfig.image_size,
             reso_encoder=args.LN3DiffConfig.image_size_encoder,
-            num_workers=args.LN3DiffConfig.num_workers,
+            num_workers=args.num_workers,
             load_depth=True,
             preprocess=vae_local.preprocess,
             dataset_size=args.LN3DiffConfig.dataset_size,
@@ -95,7 +95,7 @@ def build_everything(args: arg_util.Args):
             use_lmdb_compressed=args.LN3DiffConfig.use_lmdb_compressed,
             plucker_embedding=args.LN3DiffConfig.plucker_embedding,
             use_chunk=True,
-            load_whole=True,
+            load_whole=False,
         )
 
         [print(line) for line in auto_resume_info]
@@ -408,8 +408,8 @@ def train_one_ep(ep: int, is_first_ep: bool, start_it: int, args: arg_util.Args,
     g_it, max_it = ep * iters_train, args.ep * iters_train
     
     # Load empty embeddings for classifier-free guidance
-    empty_pooler_output = torch.from_numpy(np.load("./empty_dino_pooler_output.npy")).to(dist.get_device()).unsqueeze(0)
-    empty_dino_image_embedding = torch.from_numpy(np.load("./empty_dino_embedding.npy"))[1:, :].to(dist.get_device()).unsqueeze(0)
+    empty_pooler_output = torch.from_numpy(np.load("./files/empty_dino_pooler_output.npy")).to(dist.get_device()).unsqueeze(0)
+    empty_dino_image_embedding = torch.from_numpy(np.load("./files/empty_dino_embedding.npy"))[1:, :].to(dist.get_device()).unsqueeze(0)
 
     # Training loop
     for it, (data) in me.log_every(start_it, iters_train, ld_or_itrt, 30 if iters_train > 8000 else 5, header):

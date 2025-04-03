@@ -205,8 +205,8 @@ class VAR(nn.Module):
         rng = None if g_seed is None else self.rng.manual_seed(g_seed); rng = self.rng
 
         # Load empty embeddings for classifier-free guidance
-        empty_pooler = torch.from_numpy(np.load("./empty_dino_pooler_output.npy")).to(pooler_output.device).unsqueeze(0)
-        empty_dino = torch.from_numpy(np.load("./empty_dino_embedding.npy"))[1:, :].to(pooler_output.device).unsqueeze(0)
+        empty_pooler = torch.from_numpy(np.load("./files/empty_dino_pooler_output.npy")).to(pooler_output.device).unsqueeze(0)
+        empty_dino = torch.from_numpy(np.load("./files/empty_dino_embedding.npy"))[1:, :].to(pooler_output.device).unsqueeze(0)
         
         # Concatenate real and empty embeddings for CFG
         pooler_output = torch.cat((pooler_output, empty_pooler.expand(pooler_output.shape)), dim=0)

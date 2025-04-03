@@ -3,8 +3,6 @@ from typing import List, Optional, Tuple, Union
 
 import torch
 
-from ipdb import set_trace as st
-
 
 class NullCtx:
     def __enter__(self):
@@ -41,8 +39,6 @@ class AmpOptimizer:
     def backward_clip_step(
         self, stepping: bool, loss: torch.Tensor,
     ) -> Tuple[Optional[Union[torch.Tensor, float]], Optional[float]]:
-        # backward
-        # st()
         loss = loss.mul(self.r_accu)   # r_accu == 1.0 / n_gradient_accumulation
         orig_norm = scaler_sc = None
         # torch.autograd.set_detect_anomaly(True)
@@ -50,29 +46,13 @@ class AmpOptimizer:
             self.scaler.scale(loss).backward(retain_graph=False, create_graph=False)
         else:
             loss.backward(retain_graph=False, create_graph=False)
-        # st()
-        # 检查优化器的状态
-        # for state in self.optimizer.state.values():
-        #     for k, v in state.items():
-        #         if isinstance(v, torch.Tensor):
-        #             if k == 'step':
-        #                 print(f'[optimizer state] {k} {v}')
-        #             if v.device != loss.device:
-        #                 print(f'[optimizer state] {k} {v} {v.device} {loss.device}')
-        # st()
-        # True here
         if stepping:
-            # True here
             if self.scaler is not None: self.scaler.unscale_(self.optimizer)
-            # True here
             if self.early_clipping:
                 orig_norm = torch.nn.utils.clip_grad_norm_(self.paras, self.grad_clip)
-            # st()
-            # True here
             if self.scaler is not None:
                 self.scaler.step(self.optimizer)
                 scaler_sc: float = self.scaler.get_scale()
-                # print(f'[scaler_sc = {scaler_sc}]', flush=True)
                 if scaler_sc > 32768.: # fp16 will overflow when >65536, so multiply 32768 could be dangerous
                     self.scaler.update(new_scale=32768.)
                 else:
