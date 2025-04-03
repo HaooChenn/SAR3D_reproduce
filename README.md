@@ -16,9 +16,7 @@ SAR3D: Autoregressive 3D Object Generation and Understanding via Multi-scale 3D 
 
 **CVPR 2025**
 
-<div align="center">
-<img src="https://github.com/user-attachments/assets/badac244-f8ee-41c2-8129-b09cf6404b91" width="800px">
-</div>
+https://github.com/user-attachments/assets/badac244-f8ee-41c2-8129-b09cf6404b91
 
 </div>
 
