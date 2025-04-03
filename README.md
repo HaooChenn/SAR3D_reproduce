@@ -102,6 +102,23 @@ The dataset consists of 8 splits containing preprocessed data based on [G-buffer
 
 The dataset covers over 170K unique 3D objects, augmented to more than 630K data pairs. A data.json file is provided that maps object IDs to their corresponding categories.
 
+After downloading and unzipping the dataset, you should have the following structure:
+```bash
+/dataset-root/
+├── 1/
+├── 2/
+├── ...
+├── 8/
+│   └── 0/
+│       ├── raw_image.png
+│       ├── depth_alpha.jpg
+│       ├── c.npy
+│       ├── caption_3dtopia.txt
+│       ├── normal.png
+│       ├── ...
+│       └── image_dino_embedding_lrm.npy
+└── dataset.json
+```
 ### Training Command
 
 This script will train the image-conditioned model on the training data in the `<DATA_DIR>` folder.
