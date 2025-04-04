@@ -170,6 +170,47 @@ class VARTrainer(object):
         self.var_wo_ddp.train(training)
         return triplane, caption, data
 
+    @torch.no_grad()
+    def eval_ep_3D_VAR_text(self, ld_val: DataLoader):
+        """Evaluate 3D VAR model with text conditioning for one epoch.
+        
+        Args:
+            ld_val: Validation dataloader
+            
+        Returns:
+            Tuple of (triplane, caption, data)
+        """
+        training = self.var_wo_ddp.training
+        self.var_wo_ddp.eval()
+        
+        cfg = 4  # Classifier-free guidance scale
+        more_smooth = False
+        
+        for data in ld_val:
+            # Get batch size and vocab size
+            B = data["text_embedding"].shape[0]
+            V = self.vae_local.decoder.superresolution.quantize.vocab_size
+            
+            # Get text embeddings
+            pooler_output = data["text_pooler_output"].to(dist.get_device(), non_blocking=True)
+            text_embeddings = data["text_embedding"].to(dist.get_device(), non_blocking=True)
+            caption = data["caption"]
+            
+            # Generate triplane with classifier-free guidance
+            with torch.inference_mode():
+                triplane, _ = self.var_wo_ddp.autoregressive_infer_cfg_3D_VAR_text_l2norm(
+                    B=B,
+                    dino_image_embeddings=text_embeddings,
+                    pooler_output=pooler_output,
+                    cfg=cfg,
+                    top_k=900,
+                    top_p=0.95,
+                    more_smooth=more_smooth
+                )
+            break
+            
+        self.var_wo_ddp.train(training)
+        return triplane, caption, data
     def train_step(
         self, it: int, g_it: int, stepping: bool, metric_lg: MetricLogger, tb_lg: TensorboardLogger,
         inp_B3HW: FTen, label_B: Union[ITen, FTen], prog_si: int, prog_wp_it: float,
@@ -293,6 +334,95 @@ class VARTrainer(object):
         
         self.var_wo_ddp.prog_si = self.vae_local.decoder.superresolution.quantize.prog_si = -1
         return grad_norm, scale_log2
+
+
+    def train_step_text(
+        self, it: int, g_it: int, stepping: bool, metric_lg: MetricLogger, tb_lg: TensorboardLogger,
+        inp_B3HW: FTen, label_B: Union[ITen, FTen], prog_si: int, prog_wp_it: float,
+        empty_text_pooler_output, empty_text_embedding
+    ) -> Tuple[Optional[Union[Ten, float]], Optional[float]]:
+        # Set progressive training state
+        self.var_wo_ddp.prog_si = self.vae_local.decoder.superresolution.quantize.prog_si = prog_si
+        if self.last_prog_si != prog_si:
+            if self.last_prog_si != -1: self.first_prog = False
+            self.last_prog_si = prog_si
+            self.prog_it = 0
+        self.prog_it += 1
+        prog_wp = max(min(self.prog_it / prog_wp_it, 1), 0.01)
+        if self.first_prog: prog_wp = 1    # No warmup for first stage
+        if prog_si == len(self.patch_nums) - 1: prog_si = -1    # Max progressive stage
+
+        # Get batch size and vocab size
+        B, V = label_B.shape[0], self.vae_local.decoder.superresolution.quantize.vocab_size
+        self.var.require_backward_grad_sync = stepping
+
+        # Get ground truth indices and VAR input
+        gt_BL = inp_B3HW["gt_BL"].to(dist.get_device(), non_blocking=True)
+        x_BLCv_wo_first_l = inp_B3HW["x_BLCv_wo_first_l"].to(dist.get_device(), non_blocking=True)
+
+        # Get text embeddings
+        text_pooler_output = inp_B3HW["text_pooler_output"].to(dist.get_device(), non_blocking=True)
+        text_embedding = inp_B3HW["text_embedding"].to(dist.get_device(), non_blocking=True)
+
+        # Forward pass
+        with self.var_opt.amp_ctx:
+            self.var_wo_ddp.forward
+            logits_BLV = self.var(pooler_output=text_pooler_output, dino_condition=text_embedding, 
+                                x_BLCv_wo_first_l=x_BLCv_wo_first_l, empty_pooler_output=empty_text_pooler_output, 
+                                empty_dino_embedding=empty_text_embedding)
+
+            # Calculate loss
+            loss = self.train_loss(logits_BLV.view(-1, V), gt_BL.view(-1)).view(B, -1) 
+            if prog_si >= 0:    # Progressive training
+                bg, ed = self.begin_ends[prog_si]
+                assert logits_BLV.shape[1] == gt_BL.shape[1] == ed
+                lw = self.loss_weight[:, :ed].clone()
+                lw[:, bg:ed] *= min(max(prog_wp, 0), 1)
+            else:               # Normal training
+                lw = self.loss_weight
+            loss = loss.mul(lw).sum(dim=-1).mean()
+        
+        # Backward pass
+        grad_norm, scale_log2 = self.var_opt.backward_clip_step(loss=loss, stepping=stepping)
+        
+        # Logging
+        pred_BL = logits_BLV.data.argmax(dim=-1)
+        if it == 0 or it in metric_lg.log_iters:
+            Lmean = self.val_loss(logits_BLV.data.view(-1, V), gt_BL.view(-1)).item()
+            acc_mean = (pred_BL == gt_BL).float().mean().item() * 100
+            if prog_si >= 0:    
+                Ltail = acc_tail = -1
+            else:               # not in progressive training
+                Ltail = self.val_loss(logits_BLV.data[:, -self.last_l:].reshape(-1, V), gt_BL[:, -self.last_l:].reshape(-1)).item()
+                acc_tail = (pred_BL[:, -self.last_l:] == gt_BL[:, -self.last_l:]).float().mean().item() * 100
+            grad_norm = grad_norm.item()
+            metric_lg.update(Lm=Lmean, Lt=Ltail, Accm=acc_mean, Acct=acc_tail, tnm=grad_norm)
+
+        # Tensorboard logging
+        if g_it == 0 or (g_it + 1) % 500 == 0:
+            prob_per_class_is_chosen = pred_BL.view(-1).bincount(minlength=V).float()
+            dist.allreduce(prob_per_class_is_chosen)
+            prob_per_class_is_chosen /= prob_per_class_is_chosen.sum()
+            cluster_usage = (prob_per_class_is_chosen > 0.001 / V).float().mean().item() * 100
+            if dist.is_master():
+                if g_it == 0:
+                    tb_lg.update(head='AR_iter_loss', z_voc_usage=cluster_usage, step=-10000)
+                    tb_lg.update(head='AR_iter_loss', z_voc_usage=cluster_usage, step=-1000)
+                kw = dict(z_voc_usage=cluster_usage)
+                for si, (bg, ed) in enumerate(self.begin_ends):
+                    if 0 <= prog_si < si: break
+                    pred, tar = logits_BLV.data[:, bg:ed].reshape(-1, V), gt_BL[:, bg:ed].reshape(-1)
+                    acc = (pred.argmax(dim=-1) == tar).float().mean().item() * 100
+                    ce = self.val_loss(pred, tar).item()
+                    kw[f'acc_{self.resos[si]}'] = acc
+                    kw[f'L_{self.resos[si]}'] = ce
+                tb_lg.update(head='AR_iter_loss', **kw, step=g_it)
+                tb_lg.update(head='AR_iter_schedule', prog_a_reso=self.resos[prog_si], prog_si=prog_si, prog_wp=prog_wp, step=g_it)
+        
+        self.var_wo_ddp.prog_si = self.vae_local.decoder.superresolution.quantize.prog_si = -1
+        return grad_norm, scale_log2
+    
+
 
     def get_config(self):
         """Get trainer configuration"""

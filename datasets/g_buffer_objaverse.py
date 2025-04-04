@@ -739,6 +739,7 @@ def load_data_3D_VAR(
         infi_sampler=True,
         eval=False,
         load_whole=True,
+        text_conditioned=False,
         **kwargs):
     """
     Load 3D data with various dataset formats and configurations.
@@ -786,6 +787,7 @@ def load_data_3D_VAR(
         imgnet_normalize=imgnet_normalize,
         dataset_size=dataset_size,
         load_whole=load_whole,
+        text_conditioned=text_conditioned,
         **kwargs
     )
 
@@ -877,6 +879,7 @@ class ChunkObjaverseDataset(Dataset):
             pcd_path=None,
             load_pcd=False,
             load_whole=True,
+            text_conditioned=False,
             **kwargs):
         super().__init__()
 
@@ -895,7 +898,7 @@ class ChunkObjaverseDataset(Dataset):
         self.preprocess = preprocess
         self.plucker_embedding = plucker_embedding
         self.load_whole = load_whole
-
+        self.text_conditioned = text_conditioned
         # Get camera intrinsics
         self.intrinsics = get_intri(h=self.reso, w=self.reso, normalize=True).reshape(9)
         assert not self.classes, "Class conditioning not supported yet."
@@ -998,20 +1001,31 @@ class ChunkObjaverseDataset(Dataset):
         # Load latent codes and embeddings
         gt_BL = torch.from_numpy(np.load(os.path.join(latent_path, "gt_BL_dim_8_l2norm_lrm_256.npy")))
         x_BLCv_wo_first_l = torch.from_numpy(np.load(os.path.join(latent_path, "x_BLCv_wo_first_l_dim_8_l2_norm_lrm_256.npy")))
-        image_embedding = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_embedding_lrm.npy")))
-        
-        # Split DINO embeddings
-        image_dino_embedding = image_embedding[1:, :]
-        image_dino_pooler_output = image_embedding[0]
+        if self.text_conditioned:
+            text_embedding = torch.from_numpy(np.load(os.path.join(latent_path, "text_embedding_lrm_3dtopia.npy")))
+            text_pooler_ouput = torch.from_numpy(np.load(os.path.join(latent_path, "text_pooler_output_lrm_3dtopia.npy")))
 
-        # Update sample dict
-        sample.update({
-            'gt_BL': gt_BL,
-            'x_BLCv_wo_first_l': x_BLCv_wo_first_l,
-            'image_dino_pooler_output': image_dino_pooler_output,
-            'image_dino_embedding': image_dino_embedding,
-        })
-        return sample
+            sample.update({
+                'gt_BL': gt_BL,
+                'x_BLCv_wo_first_l': x_BLCv_wo_first_l,
+                'text_embedding': text_embedding,
+                'text_pooler_output': text_pooler_ouput})
+        else:
+            image_embedding = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_.npy")))
+            
+            # Split DINO embeddings
+            image_dino_embedding = image_embedding[1:, :]
+            image_dino_pooler_output = image_embedding[0]
+
+            # Update sample dict
+            sample.update({
+                'gt_BL': gt_BL,
+                'x_BLCv_wo_first_l': x_BLCv_wo_first_l,
+                'image_dino_pooler_output': image_dino_pooler_output,
+                'image_dino_embedding': image_dino_embedding,
+            })
+            
+        return sample   
 
     def __len__(self):
         return len(self.chunk_list)
@@ -1069,6 +1083,7 @@ class ChunkObjaverseDataset_eval(Dataset):
             pcd_path=None,
             load_pcd=False,
             load_whole=True,
+            text_conditioned=False,
             **kwargs):
 
         super().__init__()
@@ -1088,6 +1103,7 @@ class ChunkObjaverseDataset_eval(Dataset):
         self.preprocess = preprocess
         self.plucker_embedding = plucker_embedding
         self.load_whole = load_whole
+        self.text_conditioned = text_conditioned    
 
         # Get camera intrinsics
         self.intrinsics = get_intri(h=self.reso, w=self.reso, normalize=True).reshape(9)
@@ -1181,18 +1197,30 @@ class ChunkObjaverseDataset_eval(Dataset):
 
     def load_latent(self, sample, latent_path=None):
         if os.path.exists(os.path.join(latent_path, "gt_BL_dim_8_l2norm_lrm_256.npy")):
-            # Load latent codes and embeddings
             gt_BL = torch.from_numpy(np.load(os.path.join(latent_path, "gt_BL_dim_8_l2norm_lrm_256.npy")))
             x_BLCv_wo_first_l = torch.from_numpy(np.load(os.path.join(latent_path, "x_BLCv_wo_first_l_dim_8_l2_norm_lrm_256.npy")))
-            image_dino_embedding = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_embedding_lrm.npy")))[1:, :]
-            image_dino_pooler_output = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_pooler_output_lrm.npy")))
+            if self.text_conditioned:
+                text_embedding = torch.from_numpy(np.load(os.path.join(latent_path, "text_embedding_lrm_3dtopia.npy")))
+                text_pooler_ouput = torch.from_numpy(np.load(os.path.join(latent_path, "text_pooler_output_lrm_3dtopia.npy")))
 
-            sample.update({
-                'gt_BL': gt_BL,
-                'x_BLCv_wo_first_l': x_BLCv_wo_first_l,
-                'image_dino_pooler_output': image_dino_pooler_output,
-                'image_dino_embedding': image_dino_embedding,
-            })
+                sample.update({
+                    'gt_BL': gt_BL,
+                    'x_BLCv_wo_first_l': x_BLCv_wo_first_l,
+                    'text_embedding': text_embedding,
+                    'text_pooler_output': text_pooler_ouput})
+            else:
+                # Load latent codes and embeddings
+                image_dino_embedding = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_embedding_lrm.npy")))[1:, :]
+                image_dino_pooler_output = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_pooler_output_lrm.npy")))
+
+                sample.update({
+                    'gt_BL': gt_BL,
+                    'x_BLCv_wo_first_l': x_BLCv_wo_first_l,
+                    'image_dino_pooler_output': image_dino_pooler_output,
+                    'image_dino_embedding': image_dino_embedding,
+                })
+
+
         else:
             raise NotImplementedError(os.path.join(latent_path, "gt_BL_dim_8_l2norm_lrm_256.npy"))
 

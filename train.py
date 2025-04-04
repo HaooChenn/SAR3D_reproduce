@@ -77,6 +77,7 @@ def build_everything(args: arg_util.Args):
             use_chunk=True,
             eval=True,
             load_whole=True,
+            text_conditioned=args.text_conditioned,
         )
 
         # Build training loader 
@@ -96,12 +97,14 @@ def build_everything(args: arg_util.Args):
             plucker_embedding=args.LN3DiffConfig.plucker_embedding,
             use_chunk=True,
             load_whole=False,
+            text_conditioned=args.text_conditioned,
         )
 
         [print(line) for line in auto_resume_info]
         print(f'[dataloader multi processing] ...', end='', flush=True)
         stt = time.time()
-        iters_train = int( len(ld_train.dataset) / (args.batch_size * dist.get_world_size()))
+        # iters_train = int( len(ld_train.dataset) / (args.batch_size * dist.get_world_size()))
+        iters_train = 10
         print("iters_train", iters_train)
 
         ld_train = infinite_loader(ld_train)
@@ -301,7 +304,10 @@ def main_training():
                 print(f'     [saving ckpt](*) finished!  @ {local_out_ckpt}', flush=True, clean=True)
                 
                 # Generate and save visualizations
-                triplane, caption, data_eval = trainer.eval_ep_3D_VAR(ld_val)
+                if args.text_conditioned:
+                    triplane, caption, data_eval = trainer.eval_ep_3D_VAR_text(ld_val)
+                else:
+                    triplane, caption, data_eval = trainer.eval_ep_3D_VAR(ld_val)
                 save_img = []
                 
                 
@@ -408,8 +414,12 @@ def train_one_ep(ep: int, is_first_ep: bool, start_it: int, args: arg_util.Args,
     g_it, max_it = ep * iters_train, args.ep * iters_train
     
     # Load empty embeddings for classifier-free guidance
-    empty_pooler_output = torch.from_numpy(np.load("./files/empty_dino_pooler_output.npy")).to(dist.get_device()).unsqueeze(0)
-    empty_dino_image_embedding = torch.from_numpy(np.load("./files/empty_dino_embedding.npy"))[1:, :].to(dist.get_device()).unsqueeze(0)
+    if args.text_conditioned:
+        empty_text_embedding = torch.from_numpy(np.load("./files/empty_text_embedding.npy")).to(dist.get_device()).unsqueeze(0)
+        empty_text_pooler_output = torch.from_numpy(np.load("./files/empty_text_pooler_output.npy")).to(dist.get_device()).unsqueeze(0)
+    else:
+        empty_pooler_output = torch.from_numpy(np.load("./files/empty_dino_pooler_output.npy")).to(dist.get_device()).unsqueeze(0)
+        empty_dino_image_embedding = torch.from_numpy(np.load("./files/empty_dino_embedding.npy"))[1:, :].to(dist.get_device()).unsqueeze(0)
 
     # Training loop
     for it, (data) in me.log_every(start_it, iters_train, ld_or_itrt, 30 if iters_train > 8000 else 5, header):
@@ -445,12 +455,21 @@ def train_one_ep(ep: int, is_first_ep: bool, start_it: int, args: arg_util.Args,
         step_cnt += int(stepping)
 
         # Training step
-        grad_norm, scale_log2 = trainer.train_step(
-            it=it, g_it=g_it, stepping=stepping, metric_lg=me, tb_lg=tb_lg,
-            inp_B3HW=data, label_B=label, prog_si=prog_si, prog_wp_it=args.pgwp * iters_train,
-            empty_pooler_output=empty_pooler_output,
-            empty_dino_image_embedding=empty_dino_image_embedding,
-        )
+        if args.text_conditioned:
+            grad_norm, scale_log2 = trainer.train_step_text(
+                it=it, g_it=g_it, stepping=stepping, metric_lg=me, tb_lg=tb_lg,
+                inp_B3HW=data, label_B=label, prog_si=prog_si, prog_wp_it=args.pgwp * iters_train,
+                empty_text_pooler_output=empty_text_pooler_output,
+                empty_text_embedding=empty_text_embedding,
+            )
+        
+        else:
+            grad_norm, scale_log2 = trainer.train_step(
+                it=it, g_it=g_it, stepping=stepping, metric_lg=me, tb_lg=tb_lg,
+                inp_B3HW=data, label_B=label, prog_si=prog_si, prog_wp_it=args.pgwp * iters_train,
+                empty_pooler_output=empty_pooler_output,
+                empty_dino_image_embedding=empty_dino_image_embedding,
+            )
         
         # Log metrics
         me.update(tlr=max_tlr)
