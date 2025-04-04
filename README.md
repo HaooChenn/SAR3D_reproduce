@@ -73,15 +73,24 @@ You can also manually download them from our [model zoo](https://huggingface.co/
 |-------|-------------|------|
 | VQVAE | Base VQVAE model | [vqvae-ckpt.pt](https://huggingface.co/cyw-3d/sar3d/resolve/main/image-condition-ckpt.pth) |
 | SAR3D | Image-conditioned model | [image-condition-ckpt.pth](https://huggingface.co/cyw-3d/sar3d/resolve/main/vqvae-ckpt.pt) |
+| SAR3D | Text-conditioned model | [text-condition-ckpt.pth](https://huggingface.co/cyw-3d/sar3d/resolve/main/text-condition-ckpt.pth) |
 
 4. **Run inference** 🚀
 
 To test the model on your own images:
 
-1. Place your test images in the `test_images` folder
+1. Place your test images in the `test_files/test_images` folder
 2. Run the inference script:
 ```bash
 bash test_image.sh
+```
+
+To test the model on your own text prompts:
+
+1. Place your test prompts in the `test_files/test_text.json` file
+2. Run the inference script:
+```bash
+bash test_text.sh
 ```
 
 ## 📚 Training
@@ -129,8 +138,9 @@ bash train_image.sh <GPU_NUM> <VQVAE_PATH> <OUT_DIR> <DATA_DIR>
 
 - [x] Inference and Training Code for Image-conditioned Generation
 - [x] Dataset Release
+- [x] Inference Code for Text-conditioned Generation
+- [ ] Training Code for Text-conditioned Generation
 - [ ] VQVAE training code
-- [ ] Inference and Training Code for Text-conditioned Generation
 - [ ] Code for Understanding
 
 ## 📝 Citation

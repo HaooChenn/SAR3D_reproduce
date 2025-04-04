@@ -399,7 +399,115 @@ class AdaLNCrossSelfAttn_Image_new(nn.Module):
     
     def extra_repr(self) -> str:
         return f'shared_aln={self.shared_aln}'
+
     
+class AdaLNCrossSelfAttn_text(nn.Module):
+    """
+    Adaptive Layer Norm Cross Self Attention module for text conditioning.
+    
+    Args:
+        block_idx: Index of transformer block
+        last_drop_p: Last dropout probability
+        embed_dim: Embedding dimension
+        cond_dim: Conditioning dimension
+        shared_aln: Whether to share adaptive layer norm
+        norm_layer: Normalization layer
+        num_heads: Number of attention heads
+        mlp_ratio: MLP hidden dimension ratio
+        drop: Dropout rate
+        attn_drop: Attention dropout rate
+        drop_path: Drop path rate
+        attn_l2_norm: Whether to use L2 norm for attention
+        flash_if_available: Whether to use flash attention
+        fused_if_available: Whether to use fused operations
+    """
+    def __init__(
+        self, block_idx, last_drop_p, embed_dim, cond_dim, shared_aln: bool, norm_layer,
+        num_heads, mlp_ratio=4., drop=0., attn_drop=0., drop_path=0., attn_l2_norm=False,
+        flash_if_available=False, fused_if_available=True,
+    ):
+        super(AdaLNCrossSelfAttn_text, self).__init__()
+        self.block_idx = block_idx
+        self.last_drop_p = last_drop_p
+        self.C = embed_dim
+        self.D = cond_dim
+        self.drop_path = DropPath(drop_path) if drop_path > 0. else nn.Identity()
+        
+        # Initialize attention layers
+        self.attn = SelfAttention(
+            block_idx=block_idx, embed_dim=embed_dim, num_heads=num_heads,
+            attn_drop=attn_drop, proj_drop=drop, attn_l2_norm=attn_l2_norm,
+            flash_if_available=flash_if_available
+        )
+        
+        self.ffn = FFN(
+            in_features=embed_dim, hidden_features=round(embed_dim * mlp_ratio),
+            drop=drop, fused_if_available=fused_if_available
+        )
+        
+        self.cross_attn = CrossAttention(
+            block_idx=block_idx, query_dim=embed_dim, key_value_dim=768,
+            num_heads=num_heads, attn_drop=attn_drop, proj_drop=drop,
+            attn_l2_norm=attn_l2_norm, flash_if_available=flash_if_available
+        )
+        
+        # Initialize normalization layers
+        self.ln_wo_grad = norm_layer(embed_dim, elementwise_affine=False)
+        self.shared_aln = shared_aln
+        self.prenorm_ca_dino = RMSNorm(embed_dim, eps=1e-5)
+        
+        # Initialize adaptive layer norm parameters
+        if self.shared_aln:
+            self.ada_gss = nn.Parameter(torch.randn(1, 1, 6, embed_dim) / embed_dim**0.5)
+        else:
+            self.ada_lin = nn.Sequential(
+                nn.SiLU(inplace=False),
+                nn.Linear(cond_dim, 6*embed_dim)
+            )
+        
+        self.fused_add_norm_fn = None
+
+    def forward(self, x, cond_BD, dino_condition, attn_bias):
+        """
+        Forward pass through the module.
+        
+        Args:
+            x: Input tensor
+            cond_BD: Conditioning tensor
+            dino_condition: DINO feature tensor
+            attn_bias: Attention bias tensor
+            
+        Returns:
+            Processed tensor after attention and FFN layers
+        """
+        # Get adaptive layer norm parameters
+        if self.shared_aln:
+            gamma1, gamma2, scale1, scale2, shift1, shift2 = (self.ada_gss + cond_BD).unbind(2)
+        else:
+            gamma1, gamma2, scale1, scale2, shift1, shift2 = self.ada_lin(cond_BD).view(-1, 1, 6, self.C).unbind(2)
+
+        # Self attention with adaptive layer norm
+        x = x + self.drop_path(
+            self.attn(
+                self.ln_wo_grad(x).mul(scale1.add(1)).add_(shift1),
+                attn_bias=attn_bias
+            ).mul_(gamma1)
+        )
+        
+        # Cross attention with DINO features
+        x = x + self.drop_path(self.cross_attn(self.prenorm_ca_dino(x), dino_condition))
+        
+        # Feed forward with adaptive layer norm
+        x = x + self.drop_path(
+            self.ffn(
+                self.ln_wo_grad(x).mul(scale2.add(1)).add_(shift2)
+            ).mul(gamma2)
+        )
+        
+        return x
+    
+    def extra_repr(self) -> str:
+        return f'shared_aln={self.shared_aln}'
 
 class AdaLNBeforeHead(nn.Module):
     def __init__(self, C, D, norm_layer):   # C: embed_dim, D: cond_dim

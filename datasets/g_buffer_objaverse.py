@@ -1186,14 +1186,12 @@ class ChunkObjaverseDataset_eval(Dataset):
             x_BLCv_wo_first_l = torch.from_numpy(np.load(os.path.join(latent_path, "x_BLCv_wo_first_l_dim_8_l2_norm_lrm_256.npy")))
             image_dino_embedding = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_embedding_lrm.npy")))[1:, :]
             image_dino_pooler_output = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_pooler_output_lrm.npy")))
-            # single_image = torch.from_numpy(np.array(Image.open(os.path.join(latent_path, "single_image.png"))))
 
             sample.update({
                 'gt_BL': gt_BL,
                 'x_BLCv_wo_first_l': x_BLCv_wo_first_l,
                 'image_dino_pooler_output': image_dino_pooler_output,
                 'image_dino_embedding': image_dino_embedding,
-                # 'single_image': single_image
             })
         else:
             raise NotImplementedError(os.path.join(latent_path, "gt_BL_dim_8_l2norm_lrm_256.npy"))

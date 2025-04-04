@@ -10,7 +10,7 @@ import sys
 
 # Import model components
 from vit.quant import VectorQuantizer2 
-from .var import VAR
+from .var import VAR, VAR_text
 from .vqvae import VQVAE
 from .model_config import encoder_and_nsr_defaults
 
@@ -75,23 +75,42 @@ def build_vae_var_3D_VAR(
         vae_local.decoder.triplane_decoder.init_flexicubes_geometry(device=device, fovy=43)
 
     # Build VAR model
-    var_wo_ddp = VAR(
-        vae_local=vae_local,
-        num_classes=num_classes, 
-        depth=depth,
-        embed_dim=width,
-        num_heads=heads,
-        drop_rate=0.,
-        attn_drop_rate=0.,
-        drop_path_rate=dpr,
-        norm_eps=1e-6,
-        shared_aln=shared_aln,
-        cond_drop_rate=0.1,
-        attn_l2_norm=attn_l2_norm,
-        patch_nums=patch_nums,
-        flash_if_available=flash_if_available,
-        fused_if_available=fused_if_available,
-    ).to(device)
+    if args.text_conditioned:
+        var_wo_ddp = VAR_text(
+            vae_local=vae_local,
+            num_classes=num_classes, 
+            depth=depth,
+            embed_dim=width,
+            num_heads=heads,
+            drop_rate=0.,
+            attn_drop_rate=0.,
+            drop_path_rate=dpr,
+            norm_eps=1e-6,
+            shared_aln=shared_aln,
+            cond_drop_rate=0.1,
+            attn_l2_norm=attn_l2_norm,
+            patch_nums=patch_nums,
+            flash_if_available=flash_if_available,
+            fused_if_available=fused_if_available,
+        ).to(device) 
+    else: 
+        var_wo_ddp = VAR(
+            vae_local=vae_local,
+            num_classes=num_classes, 
+            depth=depth,
+            embed_dim=width,
+            num_heads=heads,
+            drop_rate=0.,
+            attn_drop_rate=0.,
+            drop_path_rate=dpr,
+            norm_eps=1e-6,
+            shared_aln=shared_aln,
+            cond_drop_rate=0.1,
+            attn_l2_norm=attn_l2_norm,
+            patch_nums=patch_nums,
+            flash_if_available=flash_if_available,
+            fused_if_available=fused_if_available,
+        ).to(device)
     
     var_wo_ddp.init_weights(init_adaln=init_adaln, 
                            init_adaln_gamma=init_adaln_gamma,

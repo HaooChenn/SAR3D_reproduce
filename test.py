@@ -1,12 +1,12 @@
 """
-Test script for SAR3D model on images.
-This script loads images from a directory, processes them through the SAR3D model,
+Test script for SAR3D model on images and text prompts.
+This script loads images/text prompts, processes them through the SAR3D model,
 and generates 3D models with rendered videos.
 
 Key steps:
-1. Load and preprocess input images 
-2. Extract DINO features
-3. Generate triplane representation
+1. Load and preprocess input images/text prompts
+2. Extract DINO/CLIP features
+3. Generate triplane representation 
 4. Render 3D models with camera views
 """
 
@@ -16,7 +16,7 @@ import time
 import torch
 from PIL import Image
 from transformers import AutoImageProcessor, Dinov2Model
-
+import json
 # Import custom modules
 import utils.dist as dist
 from utils import arg_util, misc
@@ -43,12 +43,20 @@ def build_everything(args: arg_util.Args):
     if dist.is_local_master() and not os.path.exists(args.ar_ckpt_path):
         print(f"AR checkpoint not found at {args.ar_ckpt_path}, downloading from huggingface...")
         from huggingface_hub import hf_hub_download
-        args.ar_ckpt_path = hf_hub_download(
-            repo_id="cyw-3d/sar3d",
-            filename="image-condition-ckpt.pth", 
-            cache_dir="./checkpoints"
-        )
-        print(f"Downloaded AR checkpoint to {args.ar_ckpt_path}")
+        if not args.text_conditioned:
+            args.ar_ckpt_path = hf_hub_download(
+                repo_id="cyw-3d/sar3d",
+                filename="image-condition-ckpt.pth", 
+                cache_dir="./checkpoints"
+            )
+            print(f"Downloaded Image-conditioned AR checkpoint to {args.ar_ckpt_path}")
+        else:
+            args.ar_ckpt_path = hf_hub_download(
+                repo_id="cyw-3d/sar3d",
+                filename="text-condition-ckpt.pth", 
+                cache_dir="./checkpoints"
+            )
+            print(f"Downloaded Text-conditioned AR checkpoint to {args.ar_ckpt_path}")
     ckpt_state = torch.load(args.ar_ckpt_path, map_location='cpu')['trainer']
     
     # Build models
@@ -126,30 +134,42 @@ def main_test():
     args = arg_util.init_dist_and_get_args()
     sar3d = build_everything(args)
     
-    # Get input images
-    png_files = [
-        os.path.join(root, f) 
-        for root, _, files in os.walk(args.test_image_path)
-        for f in files if f.endswith('.png')
-    ]
-    print(f"Found {len(png_files)} images to process")
+    if args.text_conditioned:
+        test_promts = json.load(open(args.text_json_path))['test_promts']
+        for clip_text in test_promts:
+            clip_feats= extract_clip_features(clip_text)
+            name = clip_text.replace(" ", "_")
+            save_dir = os.path.join(args.save_path, name, str(int(time.time())))
+            with torch.inference_mode():
+                triplane, g_BL = generate_triplane_text(sar3d, clip_feats)
+                render_results(args, sar3d, triplane, g_BL, name, save_dir)
+    else:
+        # Get input images
+        png_files = [
+            os.path.join(root, f) 
+            for root, _, files in os.walk(args.test_image_path)
+            for f in files if f.endswith('.png')
+        ]
+        print(f"Found {len(png_files)} images to process")
 
-    # Process each image
-    for png_file in png_files:
-        name = os.path.splitext(os.path.basename(png_file))[0]
-        save_dir = os.path.join(args.save_path, name, str(int(time.time())))
-        os.makedirs(save_dir, exist_ok=True)
+        # Process each image
+        for png_file in png_files:
+            name = os.path.splitext(os.path.basename(png_file))[0]
+            save_dir = os.path.join(args.save_path, name, str(int(time.time())))
+            os.makedirs(save_dir, exist_ok=True)
 
-        # Load and preprocess image
-        img = preprocess_image(png_file, save_dir)
-        
-        # Extract DINO features
-        dino_feats = extract_dino_features(img)
-        
-        # Generate 3D reconstruction
-        with torch.inference_mode():
-            triplane, g_BL = generate_triplane(sar3d, dino_feats)
-            render_results(args, sar3d, triplane, g_BL, name, save_dir)
+            # Load and preprocess image
+            img = preprocess_image(png_file, save_dir)
+            
+            # Extract DINO features
+            dino_feats = extract_dino_features(img)
+            
+            # Generate 3D reconstruction
+            with torch.inference_mode():
+                triplane, g_BL = generate_triplane(sar3d, dino_feats)
+                render_results(args, sar3d, triplane, g_BL, name, save_dir)
+    
+
 
 
 def preprocess_image(png_file: str, save_dir: str) -> Image:
@@ -193,6 +213,21 @@ def extract_dino_features(img: Image):
             'pooled': outputs.pooler_output.to(dist.get_device(), non_blocking=True)
         }
 
+def extract_clip_features(text: str):
+    """Helper function to extract CLIP features from text"""
+    from transformers import CLIPTextModel, CLIPTokenizer
+    
+    tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
+    text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
+    text_input = tokenizer(text,  padding="max_length", max_length=tokenizer.model_max_length, truncation=True, return_tensors="pt")
+    text_embeddings = text_encoder(text_input.input_ids)[0].to(dist.get_device(), non_blocking=True)
+    pooler_output = text_encoder(text_input.input_ids)[1].to(dist.get_device(), non_blocking=True)
+
+    return {
+        'embeddings': text_embeddings,
+        'pooled': pooler_output
+    }
+
 
 def generate_triplane(sar3d, dino_feats):
     """Helper function to generate triplane representation"""
@@ -200,6 +235,18 @@ def generate_triplane(sar3d, dino_feats):
         B=1,
         dino_image_embeddings=dino_feats['embeddings'],
         pooler_output=dino_feats['pooled'],
+        cfg=4,
+        top_k=10,
+        top_p=0.5,
+        more_smooth=False
+    )
+
+def generate_triplane_text(sar3d, clip_feats):
+    """Helper function to generate triplane representation"""
+    return sar3d.var_wo_ddp.autoregressive_infer_cfg_3D_VAR_text_l2norm(
+        B=1,
+        dino_image_embeddings=clip_feats['embeddings'],
+        pooler_output=clip_feats['pooled'],
         cfg=4,
         top_k=10,
         top_p=0.5,

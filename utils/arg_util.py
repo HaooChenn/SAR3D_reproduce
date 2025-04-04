@@ -30,6 +30,8 @@ class Args(Tap):
     data_path: str = '/path/to/imagenet'
     exp_name: str = 'text'
     test_image_path: str = None
+    text_conditioned: bool = False
+    text_json_path: str = None
     
     # VAE
     vfast: int = 0      # torch.compile VAE; =0: not compile; 1: compile with 'reduce-overhead'; 2: compile with 'max-autotune'
