@@ -72,8 +72,8 @@ You can also manually download them from our [model zoo](https://huggingface.co/
 | Model | Description | Link |
 |-------|-------------|------|
 | VQVAE | Base VQVAE model | [vqvae-ckpt.pt](https://huggingface.co/cyw-3d/sar3d/resolve/main/image-condition-ckpt.pth) |
-| SAR3D | Image-conditioned model | [image-condition-ckpt.pth](https://huggingface.co/cyw-3d/sar3d/resolve/main/vqvae-ckpt.pt) |
-| SAR3D | Text-conditioned model | [text-condition-ckpt.pth](https://huggingface.co/cyw-3d/sar3d/resolve/main/text-condition-ckpt.pth) |
+| Generation | Image-conditioned model | [image-condition-ckpt.pth](https://huggingface.co/cyw-3d/sar3d/resolve/main/vqvae-ckpt.pt) |
+| Generation | Text-conditioned model | [text-condition-ckpt.pth](https://huggingface.co/cyw-3d/sar3d/resolve/main/text-condition-ckpt.pth) |
 
 4. **Run inference** 🚀
 
