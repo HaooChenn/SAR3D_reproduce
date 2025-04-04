@@ -103,8 +103,7 @@ def build_everything(args: arg_util.Args):
         [print(line) for line in auto_resume_info]
         print(f'[dataloader multi processing] ...', end='', flush=True)
         stt = time.time()
-        # iters_train = int( len(ld_train.dataset) / (args.batch_size * dist.get_world_size()))
-        iters_train = 10
+        iters_train = int( len(ld_train.dataset) / (args.batch_size * dist.get_world_size()))
         print("iters_train", iters_train)
 
         ld_train = infinite_loader(ld_train)
@@ -338,7 +337,10 @@ def main_training():
                 
                 # Save rendered images
                 os.makedirs(os.path.join(args.local_out_dir_path, 'rendered'), exist_ok=True)
-                torchvision.utils.save_image(save_img, os.path.join(args.local_out_dir_path, 'rendered', f'ep_{ep}.png'), nrow=6)
+                save_path = os.path.join(args.local_out_dir_path, 'rendered', f'ep_{ep}.png')
+                
+                save_img = (save_img + 1) / 2
+                torchvision.utils.save_image(save_img, save_path, nrow=6)
 
                 # Cleanup
                 del triplane, caption, data_eval, save_img, camera, pred, gt_img, save_img_i

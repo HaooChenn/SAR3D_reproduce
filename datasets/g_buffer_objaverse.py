@@ -1011,7 +1011,7 @@ class ChunkObjaverseDataset(Dataset):
                 'text_embedding': text_embedding,
                 'text_pooler_output': text_pooler_ouput})
         else:
-            image_embedding = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_.npy")))
+            image_embedding = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_embedding_lrm.npy")))
             
             # Split DINO embeddings
             image_dino_embedding = image_embedding[1:, :]
@@ -1210,8 +1210,9 @@ class ChunkObjaverseDataset_eval(Dataset):
                     'text_pooler_output': text_pooler_ouput})
             else:
                 # Load latent codes and embeddings
-                image_dino_embedding = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_embedding_lrm.npy")))[1:, :]
-                image_dino_pooler_output = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_pooler_output_lrm.npy")))
+                image_embedding = torch.from_numpy(np.load(os.path.join(latent_path, "image_dino_embedding_lrm.npy")))
+                image_dino_embedding = image_embedding[1:, :]
+                image_dino_pooler_output = image_embedding[0]
 
                 sample.update({
                     'gt_BL': gt_BL,

@@ -87,52 +87,7 @@ class VARTrainer(object):
         # DINO models
         self.dino_image_processor = dino_image_processor
         self.dino_image_model = dino_image_model
-
-    @torch.no_grad()
-    def eval_ep(self, ld_val: DataLoader):
-        """Evaluate model for one epoch
         
-        Args:
-            ld_val: Validation dataloader
-            
-        Returns:
-            Tuple of (mean loss, tail loss, mean accuracy, tail accuracy, total samples, time taken)
-        """
-        tot = 0
-        L_mean, L_tail, acc_mean, acc_tail = 0, 0, 0, 0
-        stt = time.time()
-        training = self.var_wo_ddp.training
-        self.var_wo_ddp.eval() 
-        
-        for inp_B3HW, label_B in ld_val:
-            B, V = label_B.shape[0], self.vae_local.vocab_size
-            inp_B3HW = inp_B3HW.to(dist.get_device(), non_blocking=True)
-            label_B = label_B.to(dist.get_device(), non_blocking=True)
-            
-            gt_idx_Bl: List[ITen] = self.vae_local.img_to_idxBl(inp_B3HW)
-            gt_BL = torch.cat(gt_idx_Bl, dim=1)
-            x_BLCv_wo_first_l: Ten = self.quantize_local.idxBl_to_var_input(gt_idx_Bl)
-            
-            logits_BLV = self.var_wo_ddp(label_B, x_BLCv_wo_first_l)
-            
-            # Calculate losses and accuracies
-            L_mean += self.val_loss(logits_BLV.data.view(-1, V), gt_BL.view(-1)) * B
-            L_tail += self.val_loss(logits_BLV.data[:, -self.last_l:].reshape(-1, V), gt_BL[:, -self.last_l:].reshape(-1)) * B
-            acc_mean += (logits_BLV.data.argmax(dim=-1) == gt_BL).sum() * (100/gt_BL.shape[1])
-            acc_tail += (logits_BLV.data[:, -self.last_l:].argmax(dim=-1) == gt_BL[:, -self.last_l:]).sum() * (100 / self.last_l)
-            tot += B
-            
-        self.var_wo_ddp.train(training)
-        
-        # Aggregate stats across GPUs
-        stats = L_mean.new_tensor([L_mean.item(), L_tail.item(), acc_mean.item(), acc_tail.item(), tot])
-        dist.allreduce(stats)
-        tot = round(stats[-1].item())
-        stats /= tot
-        L_mean, L_tail, acc_mean, acc_tail, _ = stats.tolist()
-        
-        return L_mean, L_tail, acc_mean, acc_tail, tot, time.time()-stt
-
     @torch.no_grad()
     def eval_ep_3D_VAR(self, ld_val: DataLoader):
         """Evaluate 3D VAR model for one epoch

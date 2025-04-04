@@ -140,9 +140,13 @@ def main_test():
             clip_feats= extract_clip_features(clip_text)
             name = clip_text.replace(" ", "_")
             save_dir = os.path.join(args.save_path, name, str(int(time.time())))
+            print(f"sampling...")
             with torch.inference_mode():
                 triplane, g_BL = generate_triplane_text(sar3d, clip_feats)
+                print(f"sample completed!")
+                print(f"mesh dumping and rendering...")
                 render_results(args, sar3d, triplane, g_BL, name, save_dir)
+                print(f"rendering completed!")
     else:
         # Get input images
         png_files = [
@@ -166,8 +170,12 @@ def main_test():
             
             # Generate 3D reconstruction
             with torch.inference_mode():
+                print(f"sampling...")
                 triplane, g_BL = generate_triplane(sar3d, dino_feats)
+                print(f"sample completed!")
+                print(f"mesh dumping and rendering...")
                 render_results(args, sar3d, triplane, g_BL, name, save_dir)
+                print(f"rendering completed!")
     
 
 
