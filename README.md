@@ -126,12 +126,17 @@ After downloading and unzipping the dataset, you should have the following struc
 │       └── image_dino_embedding_lrm.npy
 └── dataset.json
 ```
-### Training Command
+### Training Commands
 
-This script will train the image-conditioned model on the training data in the `<DATA_DIR>` folder.
+The following scripts allow you to train both image-conditioned and text-conditioned models using the dataset stored in the specified `<DATA_DIR>` location.
 
+For image-conditioned model training:
 ```bash
-bash train_image.sh <GPU_NUM> <VQVAE_PATH> <OUT_DIR> <DATA_DIR>
+bash train_image.sh <MODEL_DEPTH> <BATCH_SIZE> <GPU_NUM> <VQVAE_PATH> <OUT_DIR> <DATA_DIR>
+```
+For text-conditioned model training:
+```bash
+bash train_text.sh <MODEL_DEPTH> <BATCH_SIZE> <GPU_NUM> <VQVAE_PATH> <OUT_DIR> <DATA_DIR>
 ```
 
 ## 📋 Roadmap
@@ -139,7 +144,7 @@ bash train_image.sh <GPU_NUM> <VQVAE_PATH> <OUT_DIR> <DATA_DIR>
 - [x] Inference and Training Code for Image-conditioned Generation
 - [x] Dataset Release
 - [x] Inference Code for Text-conditioned Generation
-- [ ] Training Code for Text-conditioned Generation
+- [x] Training Code for Text-conditioned Generation
 - [ ] VQVAE training code
 - [ ] Code for Understanding
 
