@@ -124,9 +124,6 @@ def build_everything(args: arg_util.Args):
 
     # Load pretrained VQVAE weights
     vae_ckpt = args.vqvae_pretrained_path
-    if dist.is_local_master():
-        if not os.path.exists(vae_ckpt):
-            os.system(f'wget https://huggingface.co/FoundationVision/var/resolve/main/{vae_ckpt}')
     dist.barrier()
     
     vae_local.load_state_dict(torch.load(vae_ckpt, map_location='cpu'), strict=True)

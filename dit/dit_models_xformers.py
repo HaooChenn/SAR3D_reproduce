@@ -161,26 +161,9 @@ class CaptionEmbedder(nn.Module):
                           out_features=hidden_size,
                           act_layer=act_layer,
                           drop=0)
-        # self.register_buffer("y_embedding", nn.Parameter(torch.randn(token_num, in_channels) / in_channels**0.5))
-        # self.uncond_prob = uncond_prob
 
-    # def token_drop(self, caption, force_drop_ids=None):
-    #     """
-    #     Drops labels to enable classifier-free guidance.
-    #     """
-    #     if force_drop_ids is None:
-    #         drop_ids = torch.rand(caption.shape[0]).cuda() < self.uncond_prob
-    #     else:
-    #         drop_ids = force_drop_ids == 1
-    #     caption = torch.where(drop_ids[:, None, None, None], self.y_embedding, caption)
-    #     return caption
 
     def forward(self, caption, **kwargs):
-        # if train:
-        #     assert caption.shape[2:] == self.y_embedding.shape
-        # use_dropout = self.uncond_prob > 0
-        # if (train and use_dropout) or (force_drop_ids is not None):
-        #     caption = self.token_drop(caption, force_drop_ids)
         caption = self.y_proj(caption)
         return caption
 
@@ -201,7 +184,6 @@ class DiTBlock(nn.Module):
         self.norm1 = LayerNorm(
             hidden_size,
             affine=False,
-            # elementwise_affine=False,
             eps=1e-6)
         self.attn = Attention(hidden_size,
                               num_heads=num_heads,
@@ -209,16 +191,8 @@ class DiTBlock(nn.Module):
                               **block_kwargs)
         self.norm2 = LayerNorm(
             hidden_size,
-            # elementwise_affine=False,
             affine=False,
             eps=1e-6)
-        # mlp_hidden_dim = int(hidden_size * mlp_ratio)
-        # approx_gelu = lambda: nn.GELU(approximate="tanh")
-
-        # self.mlp = Mlp(in_features=hidden_size,
-        #                hidden_features=mlp_hidden_dim,
-        #                act_layer=approx_gelu,
-        #                drop=0)
 
         self.mlp = fused_mlp.FusedMLP(
             dim_model=hidden_size,
@@ -246,20 +220,14 @@ class TextCondDiTBlock(DiTBlock):
         super().__init__(hidden_size, num_heads, mlp_ratio, **block_kwargs)
         self.cross_attn = MemoryEfficientCrossAttention(query_dim=hidden_size,
                                                         heads=num_heads)
-        # self.scale_shift_table = nn.Parameter(torch.randn(6, hidden_size) / hidden_size**0.5)
 
     def forward(self, x, t, context):
-        # B, N, C = x.shape
-
-        # shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(
-        #    self.scale_shift_table[None] + t.reshape(B,6,-1)).chunk(6, dim=1)
         shift_msa, scale_msa, gate_msa, shift_mlp, scale_mlp, gate_mlp = self.adaLN_modulation(
             t).chunk(6, dim=1)
 
         x = x + gate_msa.unsqueeze(1) * self.attn(
             modulate(self.norm1(x), shift_msa, scale_msa))
 
-        # add text embedder via cross attention
         x = x + self.cross_attn(x, context)
 
         x = x + gate_mlp.unsqueeze(1) * self.mlp(
@@ -293,10 +261,8 @@ class FinalLayer(nn.Module):
 
     def __init__(self, hidden_size, patch_size, out_channels):
         super().__init__()
-        # self.norm_final = nn.LayerNorm(hidden_size,
         self.norm_final = LayerNorm(
             hidden_size,
-            #    elementwise_affine=False,
             affine=False,
             eps=1e-6)
         self.linear = nn.Linear(hidden_size,
@@ -334,7 +300,6 @@ class DiT(nn.Module):
         context_dim=False,
         roll_out=False,
         vit_blk=DiTBlock,
-        # vit_blk=TextCondDiTBlock,
         final_layer_blk=FinalLayer,
     ):
         super().__init__()
@@ -380,29 +345,9 @@ class DiT(nn.Module):
             vit_blk(hidden_size, num_heads, mlp_ratio=mlp_ratio)
             for _ in range(depth)
         ])
-        # else:
-        #     self.blocks = nn.ModuleList([
-        #         DiTBlock(hidden_size, num_heads, mlp_ratio=mlp_ratio) if idx % 2 == 0 else
-        #         DiTBlockRollOut(hidden_size, num_heads, mlp_ratio=mlp_ratio)
-        #         for idx in range(depth)
-        #     ])
-
         self.final_layer = final_layer_blk(hidden_size, patch_size,
                                            self.out_channels)
         self.initialize_weights()
-
-        # self.mixed_prediction = mixed_prediction  # This enables mixed prediction
-        # if self.mixed_prediction:
-        #     if self.roll_out:
-        #         logit_ch = in_channels * 3
-        #     else:
-        #         logit_ch = in_channels
-        #     init = mixing_logit_init * torch.ones(
-        #         size=[1, logit_ch, 1, 1])  # hard coded for now
-        #     self.mixing_logit = torch.nn.Parameter(init, requires_grad=True)
-
-    # def len(self):
-    #     return len(self.blocks)
 
     def initialize_weights(self):
         # Initialize transformer layers:
@@ -417,7 +362,6 @@ class DiT(nn.Module):
         # Initialize (and freeze) pos_embed by sin-cos embedding:
         pos_embed = get_2d_sincos_pos_embed(
             self.pos_embed.shape[-1], int(self.x_embedder.num_patches**0.5))
-        # st()
         self.pos_embed.data.copy_(
             torch.from_numpy(pos_embed).float().unsqueeze(0))
 
@@ -491,36 +435,17 @@ class DiT(nn.Module):
         if self.roll_out:  # ! roll-out in the L dim, not B dim. add condition to all tokens.
             x = rearrange(x, '(b n) l c ->b (n l) c', n=3)
 
-        # if self.y_embedder is not None:
-        #     assert y is not None
-        #     y = self.y_embedder(y, self.training)  # (N, D)
-        #     c = t + y  # (N, D)
-
         assert context is not None
 
-        # assert context.ndim == 2
         if isinstance(context, dict):
-            context = context['crossattn']  # sgm conditioner compat
+            context = context['crossattn']  
         context = self.clip_text_proj(context)
 
-        # c = t + context
-        # else:
-        # c = t  # BS 1024
+
 
         for blk_idx, block in enumerate(self.blocks):
-            # if self.roll_out:
-            #     if blk_idx % 2 == 0: # with-in plane self attention
-            #         x = rearrange(x, 'b (n l) c -> b l (n c) ', n=3)
-            #         x = block(x, torch.repeat_interleave(c, 3, 0))  # (N, T, D)
-            #     else: # global attention
-            #         # x = rearrange(x, '(b n) l c -> b (n l) c ', n=3)
-            #         x = rearrange(x, 'b l (n c) -> b (n l) c ', n=3)
-            #         x = block(x, c)  # (N, T, D)
-            # else:
-            # st()
             x = block(x, t, context)  # (N, T, D)
 
-        # todo later
         x = self.final_layer(x, t)  # (N, T, patch_size ** 2 * out_channels)
 
         if self.roll_out:  # move n from L to B axis
@@ -530,7 +455,6 @@ class DiT(nn.Module):
 
         if self.roll_out:  # move n from L to B axis
             x = rearrange(x, '(b n) c h w -> b (c n) h w', n=3)
-            # x = rearrange(x, 'b n) c h w -> b (n c) h w', n=3)
 
         # cast to float32 for better accuracy
         x = x.to(torch.float32)
@@ -545,10 +469,6 @@ class DiT(nn.Module):
         half = x[:len(x) // 2]
         combined = torch.cat([half, half], dim=0)
         model_out = self.forward(combined, t, y)
-        # For exact reproducibility reasons, we apply classifier-free guidance on only
-        # three channels by default. The standard approach to cfg applies it to all channels.
-        # This can be done by uncommenting the following line and commenting-out the line following that.
-        # eps, rest = model_out[:, :self.in_channels], model_out[:, self.in_channels:]
         eps, rest = model_out[:, :3], model_out[:, 3:]
         cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
         half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
@@ -559,21 +479,9 @@ class DiT(nn.Module):
         """
         Forward pass of DiT, but also batches the unconditional forward pass for classifier-free guidance.
         """
-        # https://github.com/openai/glide-text2im/blob/main/notebooks/text2im.ipynb
-        # half = x[:len(x) // 2]
-        # combined = torch.cat([half, half], dim=0)
         combined = x
         model_out = self.forward(combined, t, y)
-        # For exact reproducibility reasons, we apply classifier-free guidance on only
-        # three channels by default. The standard approach to cfg applies it to all channels.
-        # This can be done by uncommenting the following line and commenting-out the line following that.
-        # eps, rest = model_out[:, :self.in_channels], model_out[:, self.in_channels:]
-        # eps, rest = model_out[:, :3], model_out[:, 3:]
-        # cond_eps, uncond_eps = torch.split(eps, len(eps) // 2, dim=0)
-        # half_eps = uncond_eps + cfg_scale * (cond_eps - uncond_eps)
-        # eps = torch.cat([half_eps, half_eps], dim=0)
-        # return torch.cat([eps, rest], dim=1)
-        # st()
+
         return model_out
 
 

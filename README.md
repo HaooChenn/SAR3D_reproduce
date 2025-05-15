@@ -71,8 +71,9 @@ You can also manually download them from our [model zoo](https://huggingface.co/
 
 | Model | Description | Link |
 |-------|-------------|------|
-| VQVAE | Base VQVAE model | [vqvae-ckpt.pt](https://huggingface.co/cyw-3d/sar3d/resolve/main/image-condition-ckpt.pth) |
-| Generation | Image-conditioned model | [image-condition-ckpt.pth](https://huggingface.co/cyw-3d/sar3d/resolve/main/vqvae-ckpt.pt) |
+| VQVAE | Base VQVAE model | [vqvae-ckpt.pt](https://huggingface.co/cyw-3d/sar3d/resolve/main/vqvae-ckpt.pt) |
+| VQVAE | Flexicubes VQVAE model | [vqvae-flexicubes-ckpt.pt](https://huggingface.co/cyw-3d/sar3d/resolve/main/vqvae-flexicubes-ckpt.pt) |
+| Generation | Image-conditioned model | [image-condition-ckpt.pth](https://huggingface.co/cyw-3d/sar3d/resolve/main/image-condition-ckpt.pth) |
 | Generation | Text-conditioned model | [text-condition-ckpt.pth](https://huggingface.co/cyw-3d/sar3d/resolve/main/text-condition-ckpt.pth) |
 
 4. **Run inference** 🚀
@@ -138,6 +139,10 @@ For text-conditioned model training:
 ```bash
 bash train_text.sh <MODEL_DEPTH> <BATCH_SIZE> <GPU_NUM> <VQVAE_PATH> <OUT_DIR> <DATA_DIR>
 ```
+For VQVAE training
+```bash
+bash train_VQVAE.sh <DATA_DIR> <GPU_NUM> <BATCH_SIZE> <OUT_DIR>
+```
 
 ## 📋 Roadmap
 
@@ -145,7 +150,7 @@ bash train_text.sh <MODEL_DEPTH> <BATCH_SIZE> <GPU_NUM> <VQVAE_PATH> <OUT_DIR> <
 - [x] Dataset Release
 - [x] Inference Code for Text-conditioned Generation
 - [x] Training Code for Text-conditioned Generation
-- [ ] VQVAE training code
+- [x] VQVAE training code
 - [ ] Code for Understanding
 
 ## 📝 Citation

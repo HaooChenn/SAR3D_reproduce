@@ -79,12 +79,19 @@ def build_everything(args: arg_util.Args):
     if dist.is_local_master() and not os.path.exists(vae_ckpt):
         print(f"VAE checkpoint not found at {vae_ckpt}, downloading from huggingface...")
         from huggingface_hub import hf_hub_download
-        vae_ckpt = hf_hub_download(
-            repo_id="cyw-3d/sar3d",
-            filename="vqvae-ckpt.pt",
-            cache_dir="./checkpoints"
-        )
-        print(f"Downloaded VAE checkpoint to {vae_ckpt}")
+        if args.flexicubes:
+            vae_ckpt = hf_hub_download(
+                repo_id="cyw-3d/sar3d",
+                filename="vqvae-flexicubes-ckpt.pt",
+                cache_dir="./checkpoints"
+            )
+        else:
+            vae_ckpt = hf_hub_download(
+                repo_id="cyw-3d/sar3d",
+                filename="vqvae-ckpt.pt",
+                cache_dir="./checkpoints"
+            )
+            print(f"Downloaded VAE checkpoint to {vae_ckpt}")
     
     vae_local.load_state_dict(torch.load(vae_ckpt, map_location='cpu'), strict=True)
 

@@ -6,10 +6,7 @@ import math
 from einops import rearrange
 from pdb import set_trace as st
 
-# from .dit_models import DiT, DiTBlock, DiT_models, get_2d_sincos_pos_embed, modulate, FinalLayer
-
 from .dit_models_xformers import DiT, DiTBlock, DiT_models, get_2d_sincos_pos_embed, modulate, FinalLayer
-# from .dit_models import DiT, DiTBlock, DiT_models, get_2d_sincos_pos_embed, modulate, FinalLayer
 
 
 def modulate2(x, shift, scale):
@@ -102,7 +99,6 @@ class DiT2(DiT):
         Forward pass of DiT.
         c: (N, C, H, W) tensor of spatial inputs (images or latent representations of images)
         """
-        # st()
         x = self.pos_embed.repeat(
             c.shape[0], 1, 1)  # (N, T, D), where T = H * W / patch_size ** 2
 
@@ -110,9 +106,6 @@ class DiT2(DiT):
         if self.return_all_layers:
             all_layers = []
 
-        # if context is not None:
-        # c = context # B 3HW C
-        # plane self attention block INTERCHANGE WITH global attention block 
         for blk_idx, block in enumerate(self.blocks):
             # True here
             # st()
@@ -139,27 +132,12 @@ class DiT2(DiT):
                                       n=self.plane_n))
             else:
                 x = block(x, c)  # (N, T, D)
-        # st()
-        # x = self.final_layer(x, c)  # (N, T, patch_size ** 2 * out_channels)
-
-        # if self.roll_out:  # move n from L to B axis
-        # x = rearrange(x, 'b (n l) c ->(b n) l c', n=3)
-
-        # x = self.unpatchify(x)  # (N, out_channels, H, W)
-
-        # if self.roll_out:  # move n from L to B axis
-        #     x = rearrange(x, '(b n) c h w -> b (n c) h w', n=3)
-
         if self.return_all_layers:
             return all_layers
         else:
             return x
 
 
-# class DiT2_DPT(DiT2):
-#     def __init__(self, input_size=32, patch_size=2, in_channels=4, hidden_size=1152, depth=28, num_heads=16, mlp_ratio=4, class_dropout_prob=0.1, num_classes=1000, learn_sigma=True, mixing_logit_init=-3, mixed_prediction=True, context_dim=False, roll_out=False, plane_n=3, vit_blk=...):
-#         super().__init__(input_size, patch_size, in_channels, hidden_size, depth, num_heads, mlp_ratio, class_dropout_prob, num_classes, learn_sigma, mixing_logit_init, mixed_prediction, context_dim, roll_out, plane_n, vit_blk)
-#         self.return_all_layers = True
 
 #################################################################################
 #                                   DiT2 Configs                                  #

@@ -3,7 +3,7 @@ import inspect
 
 from pdb import set_trace as st
 
-from cldm.cldm import ControlledUnetModel, ControlNet
+# from cldm.cldm import ControlledUnetModel, ControlNet
 
 from . import gaussian_diffusion as gd
 from .respace import SpacedDiffusion, space_timesteps

@@ -118,7 +118,8 @@ class VectorQuantizer2(nn.Module):
 
                 # Track codebook usage
                 hit_V = idx_N.bincount(minlength=self.vocab_size).float()
-                if self.training and dist.initialized():
+                # if self.training and dist.initialized():
+                if self.training:
                     handler = tdist.all_reduce(hit_V, async_op=True)
 
                 # Quantize and update residual
@@ -129,7 +130,8 @@ class VectorQuantizer2(nn.Module):
                 f_rest -= h_BChw
 
                 # Update EMA statistics
-                if self.training and dist.initialized():
+                # if self.training and dist.initialized():
+                if self.training:
                     handler.wait()
                     if self.record_hit == 0:
                         self.ema_vocab_hit_SV[si].copy_(hit_V)

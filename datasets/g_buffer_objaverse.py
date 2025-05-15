@@ -276,6 +276,14 @@ class PostProcess:
         else:
             raw_img, depth, c, alpha, bbox = data_sample
 
+        if isinstance(depth, tuple):
+            # self.append_normal = True
+            self.append_normal = False
+            depth, normal = depth
+        else:
+            self.append_normal = False
+            normal = None
+
         depth_reso, fg_mask_reso = resize_depth_mask_Tensor(
             torch.from_numpy(depth), self.reso)
 
@@ -1244,3 +1252,381 @@ class ChunkObjaverseDataset_eval(Dataset):
 
         sample = self.load_latent(sample, os.path.join(self.file_path, self.chunk_list[index]))
         return sample
+
+
+def load_data(
+    file_path="",
+    reso=64,
+    reso_encoder=224,
+    batch_size=1,
+    num_workers=6,
+    load_depth=False,
+    preprocess=None,
+    imgnet_normalize=True,
+    dataset_size=-1,
+    trainer_name='input_rec',
+    infi_sampler=True,
+    eval=False,
+    **kwargs
+):
+    dataset_cls = ChunkObjaverseDataset_eval_VAE if eval else ChunkObjaverseDataset_VAE
+    collate_fn = chunk_collate_fn
+
+    dataset = dataset_cls(
+        file_path,
+        reso,
+        reso_encoder,
+        test=False,
+        preprocess=preprocess,
+        load_depth=load_depth,
+        imgnet_normalize=imgnet_normalize,
+        dataset_size=dataset_size,
+        **kwargs
+    )
+
+    logger.log(f'dataset_cls: {trainer_name}, dataset size: {len(dataset)}')
+
+    if infi_sampler:
+        train_sampler = DistributedSampler(dataset=dataset, shuffle=True, drop_last=True)
+        loader = DataLoader(
+            dataset,
+            batch_size=batch_size,
+            num_workers=num_workers,
+            drop_last=True,
+            pin_memory=True,
+            persistent_workers=num_workers > 0,
+            sampler=train_sampler,
+            collate_fn=collate_fn,
+        )
+        while True:
+            yield from loader
+
+class ChunkObjaverseDataset_VAE(Dataset):
+    def __init__(
+            self,
+            file_path,
+            reso,
+            reso_encoder,
+            preprocess=None,
+            classes=False,
+            load_depth=False,
+            test=False,
+            scene_scale=1,
+            overfitting=False,
+            imgnet_normalize=True,
+            dataset_size=-1,
+            overfitting_bs=-1,
+            interval=1,
+            plucker_embedding=False,
+            shuffle_across_cls=False,
+            wds_split=1,
+            four_view_for_latent=False,
+            single_view_for_i23d=False,
+            load_extra_36_view=False,
+            gs_cam_format=False,
+            frame_0_as_canonical=False,
+            split_chunk_size=12,
+            mv_input=True,
+            append_depth=True,
+            pcd_path=None,
+            load_pcd=False,
+            **kwargs):
+
+        super().__init__()
+        
+        self.read_normal = True
+        self.file_path = file_path
+        self.chunk_size = 12
+        self.gs_cam_format = gs_cam_format
+
+        self.frame_0_as_canonical = frame_0_as_canonical
+        self.four_view_for_latent = four_view_for_latent  # export 0 12 30 36, 4 views for reconstruction
+        self.overfitting = overfitting
+        self.scene_scale = scene_scale
+        self.reso = reso
+        self.reso_encoder = reso_encoder
+        self.classes = False
+        self.load_depth = load_depth
+        self.preprocess = preprocess
+        self.plucker_embedding = plucker_embedding
+        self.intrinsics = get_intri(h=self.reso, w=self.reso,
+                                    normalize=True).reshape(9)
+
+        assert not self.classes, "Not support class condition now."
+
+        dataset_name = Path(self.file_path).stem.split('_')[0]
+        self.dataset_name = dataset_name
+
+        self.zfar = 100.0
+        self.znear = 0.01
+
+        # ! load all chunk paths
+        self.chunk_list = []
+        # ! direclty load from json
+        dataset_json = []
+        for cl in [  # ! around 17W instances in total. 
+                    'Furnitures',
+                    'daily-used',
+                    'Animals',
+                    'Food',
+                    'Plants',
+                    'Electronics',
+                    'BuildingsOutdoor',
+                    'Transportations_tar',
+                    'Human-Shape',
+            ]:
+            with open(f'{self.file_path}/dataset.json', 'r') as f:
+                cl_dataset_json = json.load(f)[cl]
+            dataset_json = dataset_json + cl_dataset_json
+
+        if self.chunk_size == 12:
+            self.img_ext = 'png' # ln3diff
+            for v in dataset_json:
+                self.chunk_list.append(v)
+
+
+        self.post_process = PostProcess(
+            reso,
+            reso_encoder,
+            imgnet_normalize=imgnet_normalize,
+            plucker_embedding=plucker_embedding,
+            decode_encode_img_only=False,
+            mv_input=mv_input,
+            split_chunk_input=12,
+            duplicate_sample=True,
+            append_depth=append_depth,
+            gs_cam_format=gs_cam_format,
+            orthog_duplicate=False,
+            frame_0_as_canonical=frame_0_as_canonical,
+            pcd_path=pcd_path,
+            load_pcd=load_pcd,
+            split_chunk_size=12,
+        )
+
+    def fetch_chunk_list(self, file_path):
+        if os.path.isdir(file_path):
+            chunks = [
+                os.path.join(file_path, fname) for fname in os.listdir(file_path)
+                if fname.isdigit()
+            ]
+            return sorted(chunks)
+        else:
+            return []
+    def _pre_process_chunk(self):
+        # e.g., remove bottom view
+        pass
+
+    def read_chunk(self, chunk_path):
+        raw_img = imageio.imread(os.path.join(chunk_path, f'raw_img.{self.img_ext}'))
+        h, bw, c = raw_img.shape
+        raw_img = raw_img.reshape(h, self.chunk_size, -1, c).transpose(
+            (1, 0, 2, 3))
+
+        depth_alpha = imageio.imread(
+            os.path.join(chunk_path, 'depth_alpha.jpg'))  # 2h 10w
+        depth_alpha = depth_alpha.reshape(h * 2, self.chunk_size,
+                                          -1).transpose((1, 0, 2))
+
+        depth, alpha = np.split(depth_alpha, 2, axis=1)
+
+        c = np.load(os.path.join(chunk_path, 'c.npy'))
+
+        d_near_far = np.load(os.path.join(chunk_path, 'd_near_far.npy'))
+        bbox = np.load(os.path.join(chunk_path, 'bbox.npy'))
+
+        d_near = d_near_far[0].reshape(self.chunk_size, 1, 1)
+        d_far = d_near_far[1].reshape(self.chunk_size, 1, 1)
+        depth = 1 / ((depth / 255) * (d_far - d_near) + d_near)
+
+        depth[depth > 2.9] = 0.0  # background as 0, follow old tradition
+
+        with open(os.path.join(chunk_path, 'caption_3dtopia.txt'), 'r', encoding="utf-8") as f:
+            caption = f.read()
+
+        with open(os.path.join(chunk_path, 'ins.txt'), 'r', encoding="utf-8") as f:
+            ins = f.read()
+
+        if self.read_normal:
+            normal = imageio.imread(os.path.join(
+                chunk_path, 'normal.png')).astype(np.float32) / 255.0
+
+            normal = (normal * 2 - 1).reshape(h, self.chunk_size, -1,
+                                              3).transpose((1, 0, 2, 3))
+            normal = unity2blender_fix(normal) 
+            depth = (depth, normal) 
+
+        return raw_img, depth, c, alpha, bbox, caption, ins
+
+    def __len__(self):
+        return len(self.chunk_list)
+
+    def __getitem__(self, index) -> Any:
+        sample = self.read_chunk(os.path.join(self.file_path, self.chunk_list[index]))
+        sample = self.post_process.paired_post_process_chunk(sample)
+        sample = self.post_process.create_dict_nobatch(sample)
+
+        return sample
+
+
+
+class ChunkObjaverseDataset_eval_VAE(Dataset):
+    def __init__(
+            self,
+            file_path,
+            reso,
+            reso_encoder,
+            preprocess=None,
+            classes=False,
+            load_depth=False,
+            test=False,
+            scene_scale=1,
+            overfitting=False,
+            imgnet_normalize=True,
+            dataset_size=-1,
+            overfitting_bs=-1,
+            interval=1,
+            plucker_embedding=False,
+            shuffle_across_cls=False,
+            wds_split=1,  
+            four_view_for_latent=False,
+            single_view_for_i23d=False,
+            load_extra_36_view=False,
+            gs_cam_format=False,
+            # frame_0_as_canonical=True,
+            frame_0_as_canonical=False,
+            split_chunk_size=12,
+            mv_input=True,
+            append_depth=True,
+            pcd_path=None,
+            load_pcd=False,
+            **kwargs):
+
+        super().__init__()
+        # st()
+        self.file_path = file_path
+        self.chunk_size = 12
+        self.gs_cam_format = gs_cam_format
+        self.frame_0_as_canonical = frame_0_as_canonical
+        self.four_view_for_latent = four_view_for_latent 
+        self.overfitting = overfitting
+        self.scene_scale = scene_scale
+        self.reso = reso
+        self.reso_encoder = reso_encoder
+        self.classes = False
+        self.load_depth = load_depth
+        self.preprocess = preprocess
+        self.plucker_embedding = plucker_embedding
+        self.intrinsics = get_intri(h=self.reso, w=self.reso,
+                                    normalize=True).reshape(9)
+
+        assert not self.classes, "Not support class condition now."
+
+        dataset_name = Path(self.file_path).stem.split('_')[0]
+        self.dataset_name = dataset_name
+
+        self.zfar = 100.0
+        self.znear = 0.01
+
+        # ! load all chunk paths
+        self.chunk_list = []
+
+        dataset_json = []
+        for cl in [  # ! around 17W instances in total. 
+                    'Furnitures',
+                    'daily-used',
+                    'Animals',
+                    'Food',
+                    'Plants',
+                    'Electronics',
+                    'BuildingsOutdoor',
+                    'Transportations_tar',
+                    'Human-Shape',
+            ]:
+            with open(f'{self.file_path}/dataset.json', 'r') as f:
+                cl_dataset_json = json.load(f)[cl][0:10]
+            dataset_json = dataset_json + cl_dataset_json
+
+    
+        if self.chunk_size == 12:
+            self.img_ext = 'png' # ln3diff
+            for v in dataset_json:
+                self.chunk_list.append(v)
+
+
+        self.post_process = PostProcess(
+            reso,
+            reso_encoder,
+            imgnet_normalize=imgnet_normalize,
+            plucker_embedding=plucker_embedding,
+            decode_encode_img_only=False,
+            mv_input=mv_input,
+            split_chunk_input=12,
+            duplicate_sample=True,
+            append_depth=append_depth,
+            gs_cam_format=gs_cam_format,
+            orthog_duplicate=False,
+            frame_0_as_canonical=frame_0_as_canonical,
+            pcd_path=pcd_path,
+            load_pcd=load_pcd,
+            split_chunk_size=12,
+        )
+
+
+    def fetch_chunk_list(self, file_path):
+        if os.path.isdir(file_path):
+            chunks = [
+                os.path.join(file_path, fname) for fname in os.listdir(file_path)
+                if fname.isdigit()
+            ]
+            return sorted(chunks)
+        else:
+            return []
+
+
+    def read_chunk(self, chunk_path):
+        raw_img = imageio.imread(os.path.join(chunk_path, f'raw_img.{self.img_ext}'))
+        h, bw, c = raw_img.shape
+        raw_img = raw_img.reshape(h, self.chunk_size, -1, c).transpose(
+            (1, 0, 2, 3))
+
+        depth_alpha = imageio.imread(
+            os.path.join(chunk_path, 'depth_alpha.jpg'))  # 2h 10w
+        depth_alpha = depth_alpha.reshape(h * 2, self.chunk_size,
+                                          -1).transpose((1, 0, 2))
+
+        depth, alpha = np.split(depth_alpha, 2, axis=1)
+        c = np.load(os.path.join(chunk_path, 'c.npy'))
+
+        d_near_far = np.load(os.path.join(chunk_path, 'd_near_far.npy'))
+        bbox = np.load(os.path.join(chunk_path, 'bbox.npy'))
+
+        d_near = d_near_far[0].reshape(self.chunk_size, 1, 1)
+        d_far = d_near_far[1].reshape(self.chunk_size, 1, 1)
+        depth = 1 / ((depth / 255) * (d_far - d_near) + d_near)
+
+        depth[depth > 2.9] = 0.0  # background as 0, follow old tradition
+
+        with open(os.path.join(chunk_path, 'caption_3dtopia.txt'), 'r', encoding="utf-8") as f:
+            caption = f.read()
+
+        with open(os.path.join(chunk_path, 'ins.txt'), 'r', encoding="utf-8") as f:
+            ins = f.read()
+        return raw_img, depth, c, alpha, bbox, caption, ins
+
+    def __len__(self):
+        return len(self.chunk_list)
+
+    def __getitem__(self, index) -> Any:
+        sample = self.read_chunk(os.path.join(self.file_path, self.chunk_list[index]))
+        sample = self.post_process.paired_post_process_chunk(sample)
+        sample = self.post_process.create_dict_nobatch(sample)
+        return sample
+
+
+def unity2blender_fix(normal): # up blue, left green, front (towards inside) red
+    normal_clone = normal.copy()
+    normal_clone[..., 0] = -normal[..., 0] # swap r and g
+    normal_clone[..., 1] = -normal[..., 2]
+    normal_clone[..., 2] = normal[..., 1]
+
+    return normal_clone

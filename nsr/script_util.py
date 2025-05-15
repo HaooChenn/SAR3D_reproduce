@@ -6,7 +6,6 @@ from vit.vit_triplane import Triplane
 from nsr.triplane import TriplaneMesh
 import dnnlib
 from guided_diffusion import dist_util, logger
-from ipdb import set_trace as st
 import vit.vision_transformer as vits
 from .confnet import ConfNet
 
@@ -17,11 +16,7 @@ from ldm.modules.diffusionmodules.mv_unet import MVUNet, LGM_MVEncoder
 
 
 class AE(torch.nn.Module):
-    """Auto-Encoder model that combines encoder and decoder for 3D object representation.
-    
-    The encoder extracts features from input multiview images, while the decoder generates 
-    3D triplane representations and renders novel views.
-    """
+    """Auto-Encoder model for 3D object representation."""
 
     def __init__(self,
                  encoder,
@@ -39,13 +34,10 @@ class AE(torch.nn.Module):
                  confnet=None) -> None:
         super().__init__()
         
-        # Core components
         self.encoder = encoder
         self.decoder = decoder
         self.img_size = img_size
         self.preprocess = preprocess
-        
-        # Model configuration
         self.encoder_cls_token = encoder_cls_token
         self.decoder_cls_token = decoder_cls_token
         self.use_clip = use_clip
@@ -54,30 +46,23 @@ class AE(torch.nn.Module):
         self.dim_up_mlp = None
         self.dim_up_mlp_as_func = dim_up_mlp_as_func
 
-        # Handle DINO v2 specific setup
         if self.dino_version == 'v2':
             self.encoder.mask_token = None
             self.decoder.vit_decoder.mask_token = None
 
-        # Configure non-SD models
         if 'sd' not in self.dino_version:
             self.uvit_skip_encoder = uvit_skip_encoder
             if uvit_skip_encoder:
                 logger.log(f'Enabling UViT with {len(self.encoder.blocks)} encoder blocks')
-                # Add skip connections to second half of blocks
                 for blk in self.encoder.blocks[len(self.encoder.blocks) // 2:]:
-                    blk.skip_linear = nn.Linear(2 * self.encoder.embed_dim,
-                                              self.encoder.embed_dim)
-                    # Initialize skip connection weights
+                    blk.skip_linear = nn.Linear(2 * self.encoder.embed_dim, self.encoder.embed_dim)
                     nn.init.constant_(blk.skip_linear.weight, 0)
                     if isinstance(blk.skip_linear, nn.Linear) and blk.skip_linear.bias is not None:
                         nn.init.constant_(blk.skip_linear.bias, 0)
             else:
                 logger.log('UViT disabled')
         else:
-            # Configure SD models
             if 'dit' not in self.dino_version:
-                # Clean up unused components for DINO ViT
                 self.decoder.vit_decoder.cls_token = None 
                 self.decoder.vit_decoder.patch_embed.proj = nn.Identity()
                 self.decoder.triplane_decoder.planes = None
@@ -86,10 +71,7 @@ class AE(torch.nn.Module):
             if self.use_clip:
                 self.clip_dtype = clip_dtype
             elif not no_dim_up_mlp and self.encoder.embed_dim != self.decoder.vit_decoder.embed_dim:
-                # Add dimension upsampling if needed
-                self.dim_up_mlp = nn.Linear(
-                    self.encoder.embed_dim,
-                    self.decoder.vit_decoder.embed_dim)
+                self.dim_up_mlp = nn.Linear(self.encoder.embed_dim, self.decoder.vit_decoder.embed_dim)
 
         torch.cuda.empty_cache()
 
@@ -97,14 +79,13 @@ class AE(torch.nn.Module):
         """Encode input images into latent representations"""
         if not self.use_clip:
             if self.dino_version == 'v1':
-                latent = self.encode_dinov1(*args, **kwargs)
+                return self.encode_dinov1(*args, **kwargs)
             elif self.dino_version == 'v2':
-                latent = self.encode_dinov2_uvit(*args, **kwargs) if self.uvit_skip_encoder else self.encode_dinov2(*args, **kwargs)
+                return self.encode_dinov2_uvit(*args, **kwargs) if self.uvit_skip_encoder else self.encode_dinov2(*args, **kwargs)
             else:
-                latent = self.encoder(*args)
+                return self.encoder(*args)
         else:
-            latent = self.encode_clip(*args, **kwargs)
-        return latent
+            return self.encode_clip(*args, **kwargs)
 
     def encode_dinov1(self, x):
         """DINO v1 encoding process"""
@@ -127,16 +108,13 @@ class AE(torch.nn.Module):
         x = self.encoder.prepare_tokens_with_masks(x, masks=None)
         skips = [x]
         
-        # First half of blocks
         for blk in self.encoder.blocks[:len(self.encoder.blocks)//2 - 1]:
             x = blk(x)
             skips.append(x)
             
-        # Middle blocks
         for blk in self.encoder.blocks[len(self.encoder.blocks)//2 - 1:len(self.encoder.blocks)//2]:
             x = blk(x)
             
-        # Second half with skip connections
         for blk in self.encoder.blocks[len(self.encoder.blocks)//2:]:
             x = x + blk.skip_linear(torch.cat([x, skips.pop()], dim=-1))
             x = blk(x)
@@ -184,8 +162,7 @@ class AE(torch.nn.Module):
 
         assert self.dim_up_mlp is None
         latent = self.decoder.vit_decode_backbone(ret_dict, img_size)
-        ret_dict = self.decoder.vit_decode_postprocess(latent, ret_dict)
-        return ret_dict
+        return self.decoder.vit_decode_postprocess(latent, ret_dict)
 
     def decode_after_vae(self, ret_dict, c, img_size=None, return_raw_only=False):
         """Full decoding process after VAE"""
@@ -215,49 +192,37 @@ class AE(torch.nn.Module):
         """Forward pass with multiple behavior modes"""
         if behaviour == 'enc_dec':
             return self.encode_decode(img, c, return_raw_only=return_raw_only)
-
         elif behaviour == 'enc':
             return self.encode(img)
-
         elif behaviour == 'dec':
             assert latent is not None
             return self.decode(latent, c, self.img_size, return_raw_only=return_raw_only)
-
         elif behaviour == 'dec_wo_triplane':
             assert latent is not None
             return self.decode_wo_triplane(latent, self.img_size)
-
         elif behaviour == 'enc_dec_wo_triplane':
             latent = self.encode(img)
             return self.decode_wo_triplane(latent, img_size=self.img_size, c=c)
-
         elif behaviour == 'encoder_vae':
             latent = self.encode(img)
             return self.decoder.vae_reparameterization(latent, True)
-
         elif behaviour == 'decode_after_vae_no_render':
             return self.decode_after_vae_no_render(latent, self.img_size)
-
         elif behaviour == 'decode_after_vae':
             return self.decode_after_vae(latent, c, self.img_size)
-
         elif behaviour == 'triplane_dec':
             assert latent is not None
             return self.decoder.triplane_decode(latent, c, return_raw_only=return_raw_only, **kwargs)
-
         elif behaviour == 'triplane_decode_grid':
             assert latent is not None
             return self.decoder.triplane_decode_grid(latent, **kwargs)
-
         elif behaviour == 'vit_postprocess_triplane_dec':
             assert latent is not None
             latent = self.decoder.vit_decode_postprocess(latent)
             return self.decoder.triplane_decode(latent, c)
-
         elif behaviour == 'triplane_renderer':
             assert latent is not None
             return self.decoder.triplane_renderer(latent, coordinates, directions)
-
         elif behaviour == 'get_rendering_kwargs':
             return self.decoder.triplane_decoder.rendering_kwargs
 
@@ -270,7 +235,7 @@ def create_3DAE_model(
         patch_size=16,
         in_chans=384,
         num_classes=0,
-        embed_dim=1024,  # Check ViT encoder dim
+        embed_dim=1024,
         depth=6,
         num_heads=16,
         mlp_ratio=4.,
@@ -286,9 +251,9 @@ def create_3DAE_model(
         decoder_output_dim=32,
         encoder_cls_token=False,
         decoder_cls_token=False,
-        c_dim=25,  # Conditioning label (C) dimensionality.
-        image_size=128,  # Output resolution.
-        img_channels=3,  # Number of output color channels.
+        c_dim=25,
+        image_size=128,
+        img_channels=3,
         rendering_kwargs={},
         load_pretrain_encoder=False,
         decomposed=True,
@@ -326,17 +291,13 @@ def create_3DAE_model(
             if dino_version == 'v1':
                 encoder = torch.hub.load(
                     'facebookresearch/dino:main',
-                    'dino_{}{}'.format(arch_encoder, patch_size))
-                logger.log(
-                    f'loaded pre-trained dino v1 ViT-S{patch_size} encoder ckpt'
-                )
+                    f'dino_{arch_encoder}{patch_size}')
+                logger.log(f'loaded pre-trained dino v1 ViT-S{patch_size} encoder ckpt')
             elif dino_version == 'v2':
                 encoder = torch.hub.load(
                     'facebookresearch/dinov2',
-                    'dinov2_{}{}'.format(arch_encoder, patch_size))
-                logger.log(
-                    f'loaded pre-trained dino v2 {arch_encoder}{patch_size} encoder ckpt'
-                )
+                    f'dinov2_{arch_encoder}{patch_size}')
+                logger.log(f'loaded pre-trained dino v2 {arch_encoder}{patch_size} encoder ckpt')
             elif 'sd' in dino_version:
                 if 'mv' in dino_version:
                     if 'lgm' in dino_version:
@@ -443,21 +404,14 @@ def create_3DAE_model(
         if dino_version == 'v1':
             vit_decoder = torch.hub.load(
                 'facebookresearch/dino:main',
-                'dino_{}{}'.format(arch_decoder, patch_size))
-            logger.log(
-                'loaded pre-trained decoder',
-                "facebookresearch/dino:main', 'dino_{}{}".format(
-                    arch_decoder, patch_size))
+                f'dino_{arch_decoder}{patch_size}')
+            logger.log('loaded pre-trained decoder', f"facebookresearch/dino:main', 'dino_{arch_decoder}{patch_size}")
         else:
             vit_decoder = torch.hub.load(
                 'facebookresearch/dinov2',
-                'dinov2_{}{}'.format(arch_decoder, patch_size),
+                f'dinov2_{arch_decoder}{patch_size}',
                 pretrained=decoder_load_pretrained)
-            logger.log(
-                'loaded pre-trained decoder',
-                "facebookresearch/dinov2', 'dinov2_{}{}".format(
-                    arch_decoder,
-                    patch_size), 'pretrianed=', decoder_load_pretrained)
+            logger.log('loaded pre-trained decoder', f"facebookresearch/dinov2', 'dinov2_{arch_decoder}{patch_size}, 'pretrained=', {decoder_load_pretrained}")
 
     elif 'dit' in dino_version:
         from dit.dit_decoder import DiT2_models
@@ -493,10 +447,7 @@ def create_3DAE_model(
 
     decoder = dnnlib.util.construct_class_by_name(**decoder_kwargs)
 
-    if use_conf_map:
-        confnet = ConfNet(cin=3, cout=1, nf=64, zdim=128)
-    else:
-        confnet = None
+    confnet = ConfNet(cin=3, cout=1, nf=64, zdim=128) if use_conf_map else None
 
     auto_encoder = AE(
         encoder,
@@ -585,17 +536,13 @@ def create_3DAE_model_mesh(
             if dino_version == 'v1':
                 encoder = torch.hub.load(
                     'facebookresearch/dino:main',
-                    'dino_{}{}'.format(arch_encoder, patch_size))
-                logger.log(
-                    f'loaded pre-trained dino v1 ViT-S{patch_size} encoder ckpt'
-                )
+                    f'dino_{arch_encoder}{patch_size}')
+                logger.log(f'loaded pre-trained dino v1 ViT-S{patch_size} encoder ckpt')
             elif dino_version == 'v2':
                 encoder = torch.hub.load(
                     'facebookresearch/dinov2',
-                    'dinov2_{}{}'.format(arch_encoder, patch_size))
-                logger.log(
-                    f'loaded pre-trained dino v2 {arch_encoder}{patch_size} encoder ckpt'
-                )
+                    f'dinov2_{arch_encoder}{patch_size}')
+                logger.log(f'loaded pre-trained dino v2 {arch_encoder}{patch_size} encoder ckpt')
             elif 'sd' in dino_version:
                 if 'mv' in dino_version:
                     if 'lgm' in dino_version:
@@ -704,21 +651,14 @@ def create_3DAE_model_mesh(
         if dino_version == 'v1':
             vit_decoder = torch.hub.load(
                 'facebookresearch/dino:main',
-                'dino_{}{}'.format(arch_decoder, patch_size))
-            logger.log(
-                'loaded pre-trained decoder',
-                "facebookresearch/dino:main', 'dino_{}{}".format(
-                    arch_decoder, patch_size))
+                f'dino_{arch_decoder}{patch_size}')
+            logger.log('loaded pre-trained decoder', f"facebookresearch/dino:main', 'dino_{arch_decoder}{patch_size}")
         else:
             vit_decoder = torch.hub.load(
                 'facebookresearch/dinov2',
-                'dinov2_{}{}'.format(arch_decoder, patch_size),
+                f'dinov2_{arch_decoder}{patch_size}',
                 pretrained=decoder_load_pretrained)
-            logger.log(
-                'loaded pre-trained decoder',
-                "facebookresearch/dinov2', 'dinov2_{}{}".format(
-                    arch_decoder,
-                    patch_size), 'pretrianed=', decoder_load_pretrained)
+            logger.log('loaded pre-trained decoder', f"facebookresearch/dinov2', 'dinov2_{arch_decoder}{patch_size}, 'pretrained=', {decoder_load_pretrained}")
 
     elif 'dit' in dino_version:
         from dit.dit_decoder import DiT2_models
@@ -754,10 +694,7 @@ def create_3DAE_model_mesh(
 
     decoder = dnnlib.util.construct_class_by_name(**decoder_kwargs)
 
-    if use_conf_map:
-        confnet = ConfNet(cin=3, cout=1, nf=64, zdim=128)
-    else:
-        confnet = None
+    confnet = ConfNet(cin=3, cout=1, nf=64, zdim=128) if use_conf_map else None
 
     auto_encoder = AE(
         encoder,
@@ -797,3 +734,520 @@ def create_Triplane(
         create_triplane=True,
         decoder_output_dim=decoder_output_dim)
     return decoder
+
+
+def encoder_and_nsr_defaults():
+    """Defaults for image training."""
+    res = dict(
+        dino_version='v1',
+        encoder_in_channels=3,
+        img_size=[224],
+        patch_size=16,
+        in_chans=384,
+        num_classes=0,
+        embed_dim=384,
+        depth=6,
+        num_heads=16,
+        mlp_ratio=4.,
+        qkv_bias=False,
+        qk_scale=None,
+        drop_rate=0.1,
+        attn_drop_rate=0.,
+        drop_path_rate=0.,
+        norm_layer='nn.LayerNorm',
+        cls_token=False,
+        encoder_cls_token=False,
+        decoder_cls_token=False,
+        sr_kwargs={},
+        sr_ratio=2,
+    )
+    res.update(model_encoder_defaults())
+    res.update(nsr_decoder_defaults())
+    res.update(ae_classname='vit.vit_triplane.ViTTriplaneDecomposed')
+    res.update(grid_res=0)
+    res.update(grid_scale=0.)
+    return res
+
+def model_encoder_defaults():
+    return dict(
+        use_clip=False,
+        arch_encoder="vits",
+        arch_decoder="vits",
+        load_pretrain_encoder=False,
+        encoder_lr=1e-5,
+        encoder_weight_decay=0.001,
+        no_dim_up_mlp=False,
+        dim_up_mlp_as_func=False,
+        decoder_load_pretrained=True,
+        uvit_skip_encoder=False,
+        vae_p=1,
+        ldm_z_channels=4,
+        ldm_embed_dim=4,
+        use_conf_map=False,
+        sd_E_ch=64,
+        z_channels=3*4,
+        sd_E_num_res_blocks=1,
+        arch_dit_decoder='DiT2-B/2',
+        return_all_dit_layers=False,
+        lrm_decoder=False,
+        gs_rendering=False,
+    )
+
+
+def vit_decoder_defaults():
+    return dict(
+        vit_decoder_lr=1e-5,
+        vit_decoder_wd=0.001,
+    )
+
+
+def nsr_decoder_defaults():
+    res = {'decomposed': False}
+    res.update(triplane_decoder_defaults())
+    res.update(vit_decoder_defaults())
+    return res
+
+
+def triplane_decoder_defaults():
+    return dict(
+        triplane_fg_bg=False,
+        cfg='shapenet',
+        density_reg=0.25,
+        density_reg_p_dist=0.004,
+        reg_type='l1',
+        triplane_decoder_lr=0.0025,
+        super_resolution_lr=0.0025,
+        c_scale=1,
+        nsr_lr=0.02,
+        triplane_size=224,
+        decoder_in_chans=32,
+        triplane_in_chans=-1,
+        decoder_output_dim=3,
+        out_chans=96,
+        c_dim=25,
+        ray_start=0.6,
+        ray_end=1.8,
+        rendering_kwargs={},
+        sr_training=False,
+        bcg_synthesis=False,
+        bcg_synthesis_kwargs={},
+        image_size=128,
+        patch_rendering_resolution=45,
+    )
+
+
+def rendering_options_defaults(opts):
+    rendering_options = {
+        'image_resolution': 256,
+        'disparity_space_sampling': False,
+        'clamp_mode': 'softplus',
+        'c_gen_conditioning_zero': True,
+        'c_scale': opts.c_scale,
+        'superresolution_noise_mode': 'none',
+        'density_reg': opts.density_reg,
+        'density_reg_p_dist': opts.density_reg_p_dist,
+        'reg_type': opts.reg_type,
+        'decoder_lr_mul': 1,
+        'decoder_activation': 'sigmoid',
+        'sr_antialias': True,
+        'return_triplane_features': False,
+        'return_sampling_details_flag': False,
+        'superresolution_module': 'utils.torch_utils.components.NearestConvSR',
+    }
+
+    if opts.cfg == 'ffhq':
+        rendering_options.update({
+            'superresolution_module': 'nsr.superresolution.SuperresolutionHybrid8XDC',
+            'focal': 2985.29 / 700,
+            'depth_resolution': 48,
+            'depth_resolution_importance': 48,
+            'bg_depth_resolution': 16,
+            'ray_start': 2.25,
+            'ray_end': 3.3,
+            'box_warp': 1,
+            'avg_camera_radius': 2.7,
+            'avg_camera_pivot': [0, 0, 0.2],
+            'superresolution_noise_mode': 'random',
+        })
+    elif opts.cfg == 'afhq':
+        rendering_options.update({
+            'superresolution_module': 'nsr.superresolution.SuperresolutionHybrid8X',
+            'superresolution_noise_mode': 'random',
+            'focal': 4.2647,
+            'depth_resolution': 48,
+            'depth_resolution_importance': 48,
+            'ray_start': 2.25,
+            'ray_end': 3.3,
+            'box_warp': 1,
+            'avg_camera_radius': 2.7,
+            'avg_camera_pivot': [0, 0, -0.06],
+        })
+    elif opts.cfg == 'shapenet':
+        rendering_options.update({
+            'depth_resolution': 64,
+            'depth_resolution_importance': 64,
+            'ray_start': 0.2,
+            'ray_end': 2.2,
+            'box_warp': 2,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+        })
+
+    elif opts.cfg == 'eg3d_shapenet_aug_resolution':
+        rendering_options.update({
+            'depth_resolution': 80,
+            'depth_resolution_importance': 80,
+            'ray_start': 0.1,
+            'ray_end': 1.9,
+            'box_warp': 1.1,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+        })
+
+    elif opts.cfg == 'eg3d_shapenet_aug_resolution_chair':
+        rendering_options.update({
+            'depth_resolution': 96,
+            'depth_resolution_importance': 96,
+            'ray_start': 0.1,
+            'ray_end': 1.9,
+            'box_warp': 1.1,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+        })
+
+    elif opts.cfg == 'eg3d_shapenet_aug_resolution_chair_128':
+        rendering_options.update({
+            'depth_resolution': 128,
+            'depth_resolution_importance': 128,
+            'ray_start': 0.1,
+            'ray_end': 1.9,
+            'box_warp': 1.1,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+        })
+
+    elif opts.cfg == 'eg3d_shapenet_aug_resolution_chair_64':
+        rendering_options.update({
+            'depth_resolution': 64,
+            'depth_resolution_importance': 64,
+            'ray_start': 0.1,
+            'ray_end': 1.9,
+            'box_warp': 1.1,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+        })
+
+    elif opts.cfg == 'srn_shapenet_aug_resolution_chair_128':
+        rendering_options.update({
+            'depth_resolution': 128,
+            'depth_resolution_importance': 128,
+            'ray_start': 1.25,
+            'ray_end': 2.75,
+            'box_warp': 1.5,
+            'white_back': True,
+            'avg_camera_radius': 2,
+            'avg_camera_pivot': [0, 0, 0],
+        })
+
+    elif opts.cfg == 'eg3d_shapenet_aug_resolution_chair_128_residualSR':
+        rendering_options.update({
+            'depth_resolution': 128,
+            'depth_resolution_importance': 128,
+            'ray_start': 0.1,
+            'ray_end': 1.9,
+            'box_warp': 1.1,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+            'superresolution_module': 'utils.torch_utils.components.NearestConvSR_Residual',
+        })
+
+    elif opts.cfg == 'shapenet_tuneray':
+        rendering_options.update({
+            'depth_resolution': 64,
+            'depth_resolution_importance': 64,
+            'ray_start': opts.ray_start,
+            'ray_end': opts.ray_end,
+            'box_warp': opts.ray_end - opts.ray_start,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+        })
+
+    elif opts.cfg == 'shapenet_tuneray_aug_resolution':
+        rendering_options.update({
+            'depth_resolution': 80,
+            'depth_resolution_importance': 80,
+            'ray_start': opts.ray_start,
+            'ray_end': opts.ray_end,
+            'box_warp': opts.ray_end - opts.ray_start,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+        })
+
+    elif opts.cfg == 'shapenet_tuneray_aug_resolution_64':
+        rendering_options.update({
+            'depth_resolution': 128,
+            'depth_resolution_importance': 128,
+            'ray_start': opts.ray_start,
+            'ray_end': opts.ray_end,
+            'box_warp': opts.ray_end - opts.ray_start,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+        })
+
+    elif opts.cfg == 'shapenet_tuneray_aug_resolution_64_96':
+        rendering_options.update({
+            'depth_resolution': 96,
+            'depth_resolution_importance': 96,
+            'ray_start': opts.ray_start,
+            'ray_end': opts.ray_end,
+            'box_warp': opts.ray_end - opts.ray_start,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+        })
+
+    elif opts.cfg == 'shapenet_tuneray_aug_resolution_64_96_nearestSR':
+        rendering_options.update({
+            'depth_resolution': 96,
+            'depth_resolution_importance': 96,
+            'ray_start': opts.ray_start,
+            'ray_end': opts.ray_end,
+            'box_warp': opts.ray_end - opts.ray_start,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+            'superresolution_module': 'utils.torch_utils.components.NearestConvSR',
+        })
+
+    elif opts.cfg == 'shapenet_tuneray_aug_resolution_64_64_nearestSR':
+        rendering_options.update({
+            'depth_resolution': 64,
+            'depth_resolution_importance': 64,
+            'ray_start': opts.ray_start,
+            'ray_end': opts.ray_end,
+            'box_warp': opts.ray_end - opts.ray_start,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+            'superresolution_module': 'utils.torch_utils.components.NearestConvSR',
+        })
+
+    elif opts.cfg == 'shapenet_tuneray_aug_resolution_64_64_nearestSR_patch':
+        rendering_options.update({
+            'depth_resolution': 64,
+            'depth_resolution_importance': 64,
+            'ray_start': opts.ray_start,
+            'ray_end': opts.ray_end,
+            'box_warp': opts.ray_end - opts.ray_start,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+            'superresolution_module': 'utils.torch_utils.components.NearestConvSR',
+            'PatchRaySampler': True,
+            'patch_rendering_resolution': opts.patch_rendering_resolution,
+        })
+
+    elif opts.cfg == 'objverse_tuneray_aug_resolution_64_64_nearestSR':
+        rendering_options.update({
+            'depth_resolution': 64,
+            'depth_resolution_importance': 64,
+            'ray_start': opts.ray_start,
+            'ray_end': opts.ray_end,
+            'box_warp': opts.ray_end - opts.ray_start,
+            'white_back': True,
+            'avg_camera_radius': 1.946,
+            'avg_camera_pivot': [0, 0, 0],
+            'superresolution_module': 'utils.torch_utils.components.NearestConvSR',
+        })
+
+    elif opts.cfg == 'objverse_tuneray_aug_resolution_64_64_auto':
+        rendering_options.update({
+            'depth_resolution': 64,
+            'depth_resolution_importance': 64,
+            'ray_start': 'auto',
+            'ray_end': 'auto',
+            'box_warp': 0.9,
+            'white_back': True,
+            'radius_range': [1.5, 2],
+            'sampler_bbox_min': -0.45,
+            'sampler_bbox_max': 0.45,
+            'filter_out_of_bbox': True,
+            'PatchRaySampler': True,
+            'patch_rendering_resolution': opts.patch_rendering_resolution,
+        })
+        rendering_options['z_near'] = rendering_options['radius_range'][0] + rendering_options['sampler_bbox_min']
+        rendering_options['z_far'] = rendering_options['radius_range'][1] + rendering_options['sampler_bbox_max']
+
+    elif opts.cfg == 'objverse_tuneray_aug_resolution_32_32_auto':
+        rendering_options.update({
+            'depth_resolution': 32,
+            'depth_resolution_importance': 32,
+            'ray_start': 'auto',
+            'ray_end': 'auto',
+            'box_warp': 0.9,
+            'white_back': True,
+            'radius_range': [1.5, 2],
+            'sampler_bbox_min': -0.45,
+            'sampler_bbox_max': 0.45,
+            'filter_out_of_bbox': True,
+            'PatchRaySampler': True,
+            'patch_rendering_resolution': opts.patch_rendering_resolution,
+        })
+        rendering_options['z_near'] = rendering_options['radius_range'][0] + rendering_options['sampler_bbox_min']
+        rendering_options['z_far'] = rendering_options['radius_range'][1] + rendering_options['sampler_bbox_max']
+
+    elif opts.cfg == 'objverse_tuneray_aug_resolution_48_48_auto':
+        rendering_options.update({
+            'depth_resolution': 48,
+            'depth_resolution_importance': 48,
+            'ray_start': 'auto',
+            'ray_end': 'auto',
+            'box_warp': 0.9,
+            'white_back': True,
+            'radius_range': [1.5, 2],
+            'sampler_bbox_min': -0.45,
+            'sampler_bbox_max': 0.45,
+            'filter_out_of_bbox': True,
+            'PatchRaySampler': True,
+            'patch_rendering_resolution': opts.patch_rendering_resolution,
+        })
+        rendering_options['z_near'] = rendering_options['radius_range'][0] + rendering_options['sampler_bbox_min']
+        rendering_options['z_far'] = rendering_options['radius_range'][1] + rendering_options['sampler_bbox_max']
+
+    elif opts.cfg == 'shapenet_tuneray_aug_resolution_64_96_nearestResidualSR':
+        rendering_options.update({
+            'depth_resolution': 96,
+            'depth_resolution_importance': 96,
+            'ray_start': opts.ray_start,
+            'ray_end': opts.ray_end,
+            'box_warp': opts.ray_end - opts.ray_start,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+            'superresolution_module': 'utils.torch_utils.components.NearestConvSR_Residual',
+        })
+
+    elif opts.cfg == 'shapenet_tuneray_aug_resolution_64_64_nearestResidualSR':
+        rendering_options.update({
+            'depth_resolution': 64,
+            'depth_resolution_importance': 64,
+            'ray_start': opts.ray_start,
+            'ray_end': opts.ray_end,
+            'box_warp': opts.ray_end - opts.ray_start,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+            'superresolution_module': 'utils.torch_utils.components.NearestConvSR_Residual',
+        })
+
+    elif opts.cfg == 'shapenet_tuneray_aug_resolution_64_104':
+        rendering_options.update({
+            'depth_resolution': 104,
+            'depth_resolution_importance': 104,
+            'ray_start': opts.ray_start,
+            'ray_end': opts.ray_end,
+            'box_warp': opts.ray_end - opts.ray_start,
+            'white_back': True,
+            'avg_camera_radius': 1.2,
+            'avg_camera_pivot': [0, 0, 0],
+        })
+
+    rendering_options.update({'return_sampling_details_flag': True})
+
+    return rendering_options
+
+
+def eg3d_options_default():
+    return dnnlib.EasyDict(
+        dict(
+            cbase=32768,
+            cmax=512,
+            map_depth=2,
+            g_class_name='nsr.triplane.TriPlaneGenerator',
+            g_num_fp16_res=0,
+        ))
+
+
+def loss_defaults():
+    return dict(
+        color_criterion='mse',
+        l2_lambda=1.0,
+        lpips_lambda=0.,
+        lpips_delay_iter=0,
+        sr_delay_iter=0,
+        kl_anneal=False,
+        latent_lambda=0.,
+        latent_criterion='mse',
+        kl_lambda=0.0,
+        ssim_lambda=0.,
+        l1_lambda=0.,
+        id_lambda=0.0,
+        depth_lambda=0.0,
+        alpha_lambda=0.0,
+        vq_loss_lambda=0.0,
+        sdf_reg_lambda=0.0,
+        normal_lambda=0.0,
+        fg_mse=False,
+        bg_lamdba=0.0,
+        density_reg=0.0,
+        density_reg_p_dist=0.004,
+        density_reg_every=4,
+        shape_uniform_lambda=0.005,
+        shape_importance_lambda=0.01,
+        shape_depth_lambda=0.,
+        rec_cvD_lambda=0.01,
+        nvs_cvD_lambda=0.025,
+        patchgan_disc_factor=0.01,
+        patchgan_disc_g_weight=0.2,
+        r1_gamma=1.0,
+        sds_lamdba=1.0,
+        nvs_D_lr_mul=1,
+        cano_D_lr_mul=1,
+        ce_balanced_kl=1.,
+        p_eps_lambda=1,
+        symmetry_loss=False,
+        depth_smoothness_lambda=0.0,
+        ce_lambda=1.0,
+        negative_entropy_lambda=1.0,
+        grad_clip=False,
+        online_mask=False,
+    )
+
+
+def dataset_defaults():
+    return dict(
+        use_lmdb=False,
+        use_wds=False,
+        use_lmdb_compressed=True,
+        compile=False,
+        interval=1,
+        objv_dataset=False,
+        decode_encode_img_only=False,
+        load_wds_diff=False,
+        load_wds_latent=False,
+        eval_load_wds_instance=True,
+        shards_lst="",
+        eval_shards_lst="",
+        mv_input=False,
+        duplicate_sample=True,
+        orthog_duplicate=False,
+        split_chunk_input=False,
+        load_real=False,
+        four_view_for_latent=False,
+        single_view_for_i23d=False,
+        shuffle_across_cls=False,
+        load_extra_36_view=False,
+        mv_latent_dir='',
+        append_depth=False,
+        plucker_embedding=False,
+        gs_cam_format=False,
+    )
