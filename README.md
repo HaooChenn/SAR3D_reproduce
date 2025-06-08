@@ -30,16 +30,7 @@ https://github.com/user-attachments/assets/badac244-f8ee-41c2-8129-b09cf6404b91
 
 ### Prerequisites
 
-We've tested SAR3D on the following environments:
-
-<details open>
-<summary><b>Rocky Linux 8.10 (Green Obsidian)</b></summary>
-
-- Python 3.9.8
-- PyTorch 2.2.2 
-- CUDA 12.1
-- NVIDIA H200
-</details>
+We've tested SAR3D on the following environment:
 
 <details open>
 <summary><b>Ubuntu 20.04</b></summary>
@@ -151,7 +142,7 @@ bash train_VQVAE.sh <DATA_DIR> <GPU_NUM> <BATCH_SIZE> <OUT_DIR>
 - [x] Inference Code for Text-conditioned Generation
 - [x] Training Code for Text-conditioned Generation
 - [x] VQVAE training code
-- [ ] Code for Understanding
+- [x] Code for Understanding
 
 ## 📝 Citation
 
