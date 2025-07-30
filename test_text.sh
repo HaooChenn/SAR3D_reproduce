@@ -2,8 +2,8 @@
 torchrun --nproc_per_node=1 --nnodes=1 \
   --rdzv-endpoint=localhost:2980 --rdzv_backend=c10d test.py \
   --depth=16 --fp16=2  \
-  --vqvae_pretrained_path ./checkpoint/vqvae-ckpt.pt \
-  --ar_ckpt_path ./checkpoint/text-condition-ckpt.pth \
+  --vqvae_pretrained_path ./checkpoints/vqvae-ckpt.pt \
+  --ar_ckpt_path ./checkpoints/text-condition-ckpt.pth \
   --save_path ./eval \
   --flexicubes False \
   --text_conditioned True \
@@ -13,8 +13,8 @@ torchrun --nproc_per_node=1 --nnodes=1 \
 # torchrun --nproc_per_node=1 --nnodes=1 \
 #   --rdzv-endpoint=localhost:2980 --rdzv_backend=c10d test.py \
 #   --depth=16 --fp16=2  \
-#   --vqvae_pretrained_path ./checkpoint/vqvae-flexicubes-ckpt.pt \
-#   --ar_ckpt_path ./checkpoint/text-condition-ckpt.pth \
+#   --vqvae_pretrained_path ./checkpoints/vqvae-flexicubes-ckpt.pt \
+#   --ar_ckpt_path ./checkpoints/text-condition-ckpt.pth \
 #   --save_path ./eval \
 #   --flexicubes True \
 #   --text_conditioned True \
