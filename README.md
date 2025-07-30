@@ -50,6 +50,15 @@ cd SAR3D
 ```
 
 2. **Set up environment**
+
+单独装apex
+```
+git clone https://github.com/ptrblck/apex.git
+cd apex
+git checkout apex_no_distributed
+pip install -v --no-cache-dir ./
+```
+再装环境
 ```bash
 conda env create -f environment.yml
 ```
