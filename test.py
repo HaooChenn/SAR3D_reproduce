@@ -15,7 +15,7 @@ import sys
 import time
 import torch
 from PIL import Image
-from transformers import AutoImageProcessor, Dinov2Model
+from transformers import AutoImageProcessor, Dinov2Model, CLIPTextModel, CLIPTokenizer
 import json
 # Import custom modules
 import utils.dist as dist
@@ -26,6 +26,9 @@ from utils.render_utils import render_video_given_triplane, render_video_given_t
 from xformers.triton import FusedLayerNorm as LayerNorm
 from xformers.components.activations import Activation
 from xformers.components.feedforward import fused_mlp
+
+# 导入tqdm用于显示进度条
+from tqdm import tqdm
 
 
 def build_everything(args: arg_util.Args):
@@ -38,32 +41,23 @@ def build_everything(args: arg_util.Args):
     Returns:
         trainer: Initialized SAR3D trainer with loaded weights
     """
+    print("[INFO] Starting to build models and load checkpoints...")
+    
     # Load model checkpoints
-    # Check if AR checkpoint exists
-    if dist.is_local_master() and not os.path.exists(args.ar_ckpt_path):
-        print(f"AR checkpoint not found at {args.ar_ckpt_path}, downloading from huggingface...")
-        from huggingface_hub import hf_hub_download
-        if not args.text_conditioned:
-            args.ar_ckpt_path = hf_hub_download(
-                repo_id="cyw-3d/sar3d",
-                filename="image-condition-ckpt.pth", 
-                cache_dir="./checkpoints"
-            )
-            print(f"Downloaded Image-conditioned AR checkpoint to {args.ar_ckpt_path}")
-        else:
-            args.ar_ckpt_path = hf_hub_download(
-                repo_id="cyw-3d/sar3d",
-                filename="text-condition-ckpt.pth", 
-                cache_dir="./checkpoints"
-            )
-            print(f"Downloaded Text-conditioned AR checkpoint to {args.ar_ckpt_path}")
+    # Check if AR checkpoint exists and fail if not found
+    if not os.path.exists(args.ar_ckpt_path):
+        raise FileNotFoundError(f"AR checkpoint not found at {args.ar_ckpt_path}. Please make sure the file exists.")
+        
+    print(f"[INFO] Loading AR checkpoint from: {args.ar_ckpt_path}")
     ckpt_state = torch.load(args.ar_ckpt_path, map_location='cpu')['trainer']
+    print("[INFO] AR checkpoint loaded.")
     
     # Build models
     from models import build_vae_var_3D_VAR
     from trainer import VARTrainer
     from torch.nn.parallel import DistributedDataParallel as DDP
 
+    print("[INFO] Initializing VAE and VAR models...")
     # Initialize VAE and VAR models
     vae_local, var_wo_ddp = build_vae_var_3D_VAR(
         device=dist.get_device(), patch_nums=args.patch_nums,
@@ -74,26 +68,14 @@ def build_everything(args: arg_util.Args):
         init_std=args.ini, args=args
     )
 
-    # Load VAE weights
+    # Load VAE weights and fail if not found
     vae_ckpt = args.vqvae_pretrained_path
-    if dist.is_local_master() and not os.path.exists(vae_ckpt):
-        print(f"VAE checkpoint not found at {vae_ckpt}, downloading from huggingface...")
-        from huggingface_hub import hf_hub_download
-        if args.flexicubes:
-            vae_ckpt = hf_hub_download(
-                repo_id="cyw-3d/sar3d",
-                filename="vqvae-flexicubes-ckpt.pt",
-                cache_dir="./checkpoints"
-            )
-        else:
-            vae_ckpt = hf_hub_download(
-                repo_id="cyw-3d/sar3d",
-                filename="vqvae-ckpt.pt",
-                cache_dir="./checkpoints"
-            )
-            print(f"Downloaded VAE checkpoint to {vae_ckpt}")
+    if not os.path.exists(vae_ckpt):
+        raise FileNotFoundError(f"VAE checkpoint not found at {vae_ckpt}. Please make sure the file exists.")
     
+    print(f"[INFO] Loading VAE weights from: {vae_ckpt}")
     vae_local.load_state_dict(torch.load(vae_ckpt, map_location='cpu'), strict=True)
+    print("[INFO] VAE weights loaded.")
 
     # Compile and wrap models
     vae_local = args.compile_model(vae_local, args.vfast)
@@ -106,15 +88,8 @@ def build_everything(args: arg_util.Args):
     )
 
     # Print model info
-    print(f'[INIT] VAR model = {var_wo_ddp}\n')
-    count_p = lambda m: f'{sum(p.numel() for p in m.parameters())/1e6:.2f}M'
-    print(f'[INIT] Parameters:')
-    print(f'  VAE: {count_p(vae_local)}')
-    print(f'  VAE Encoder: {count_p(vae_local.encoder)}') 
-    print(f'  VAE Decoder: {count_p(vae_local.decoder)}')
-    print(f'  VAE Quantizer: {count_p(vae_local.decoder.superresolution.quantize)}')
-    print(f'  VAR: {count_p(var_wo_ddp)}\n')
-
+    print(f'[INFO] VAE and VAR models initialized.')
+    
     # Initialize trainer
     trainer = VARTrainer(
         device=args.device,
@@ -127,6 +102,7 @@ def build_everything(args: arg_util.Args):
         label_smooth=args.ls
     )
     trainer.load_state_dict(ckpt_state, strict=False, skip_vae=True)
+    print("[INFO] All models and checkpoints loaded successfully.")
 
     # Cleanup
     del vae_local, var_wo_ddp, var
@@ -142,49 +118,65 @@ def main_test():
     sar3d = build_everything(args)
     
     if args.text_conditioned:
-        test_promts = json.load(open(args.text_json_path))['test_promts']
-        for clip_text in test_promts:
+        print("\n[INFO] Text-conditioned generation mode.")
+        test_prompts = json.load(open(args.text_json_path))['test_promts']
+        
+        # --- MODIFICATION: Improved tqdm progress bar ---
+        progress_bar = tqdm(test_prompts, desc="Processing Prompts")
+        for clip_text in progress_bar:
+            # Dynamically update the description for the current item
+            prompt_short = (clip_text[:40] + '...') if len(clip_text) > 40 else clip_text
+            progress_bar.set_description(f"Processing: {prompt_short}")
+
+            # --- MODIFICATION: Simplified print statements ---
+            print("  > Extracting CLIP features...")
             clip_feats= extract_clip_features(clip_text)
+            
             name = clip_text.replace(" ", "_")
             save_dir = os.path.join(args.save_path, name, str(int(time.time())))
-            print(f"sampling...")
+            
+            print("  > Generating 3D model (sampling triplane)...")
             with torch.inference_mode():
                 triplane, g_BL = generate_triplane_text(sar3d, clip_feats)
-                print(f"sample completed!")
-                print(f"mesh dumping and rendering...")
+                print("  > Rendering video and mesh...")
                 render_results(args, sar3d, triplane, g_BL, name, save_dir)
-                print(f"rendering completed!")
+                print(f"  > Done! Results saved to {save_dir}")
+
     else:
+        print("\n[INFO] Image-conditioned generation mode.")
         # Get input images
         png_files = [
             os.path.join(root, f) 
             for root, _, files in os.walk(args.test_image_path)
             for f in files if f.endswith('.png')
         ]
-        print(f"Found {len(png_files)} images to process")
+        print(f"[INFO] Found {len(png_files)} images to process.")
 
-        # Process each image
-        for png_file in png_files:
+        # --- MODIFICATION: Improved tqdm progress bar ---
+        progress_bar = tqdm(png_files, desc="Processing Images")
+        for png_file in progress_bar:
+            # Dynamically update the description for the current item
+            progress_bar.set_description(f"Processing: {os.path.basename(png_file)}")
+            
             name = os.path.splitext(os.path.basename(png_file))[0]
             save_dir = os.path.join(args.save_path, name, str(int(time.time())))
             os.makedirs(save_dir, exist_ok=True)
 
-            # Load and preprocess image
+            # --- MODIFICATION: Simplified print statements ---
+            print("  > Preprocessing image...")
             img = preprocess_image(png_file, save_dir)
             
-            # Extract DINO features
+            print("  > Extracting DINO features...")
             dino_feats = extract_dino_features(img)
             
-            # Generate 3D reconstruction
+            print("  > Generating 3D model (sampling triplane)...")
             with torch.inference_mode():
-                print(f"sampling...")
                 triplane, g_BL = generate_triplane(sar3d, dino_feats)
-                print(f"sample completed!")
-                print(f"mesh dumping and rendering...")
+                print("  > Rendering video and mesh...")
                 render_results(args, sar3d, triplane, g_BL, name, save_dir)
-                print(f"rendering completed!")
+                print(f"  > Done! Results saved to {save_dir}")
     
-
+    print("\n[INFO] All tasks completed.")
 
 
 def preprocess_image(png_file: str, save_dir: str) -> Image:
@@ -192,17 +184,14 @@ def preprocess_image(png_file: str, save_dir: str) -> Image:
     img = Image.open(png_file)
     w, h = img.size
     
-    # Make square by padding with white background
     size = max(w, h)
     if img.mode == "RGBA":
-        # For RGBA images, create white background and paste original with alpha
         bg = Image.new("RGBA", (size, size), (255, 255, 255, 255))
         left = (size - w) // 2
         top = (size - h) // 2
         bg.paste(img, (left, top), mask=img)
         img = bg.convert('RGB')
     else:
-        # For RGB images, create white background and paste original
         bg = Image.new("RGB", (size, size), (255, 255, 255))
         left = (size - w) // 2
         top = (size - h) // 2
@@ -216,9 +205,12 @@ def preprocess_image(png_file: str, save_dir: str) -> Image:
 
 def extract_dino_features(img: Image):
     """Helper function to extract DINO features from image"""
-    model_id = "facebook/dinov2-large"
-    processor = AutoImageProcessor.from_pretrained(model_id)
-    model = Dinov2Model.from_pretrained(model_id)
+    local_dino_path = "./pretrained_models/dinov2-large"
+    if not os.path.exists(local_dino_path):
+        raise FileNotFoundError(f"DINOv2 model not found at {local_dino_path}. Please download it and place it there.")
+        
+    processor = AutoImageProcessor.from_pretrained(local_dino_path)
+    model = Dinov2Model.from_pretrained(local_dino_path)
     
     with torch.no_grad():
         inputs = processor(images=img, return_tensors="pt")
@@ -230,10 +222,13 @@ def extract_dino_features(img: Image):
 
 def extract_clip_features(text: str):
     """Helper function to extract CLIP features from text"""
-    from transformers import CLIPTextModel, CLIPTokenizer
+    local_clip_path = "./pretrained_models/clip-vit-large-patch14"
+    if not os.path.exists(local_clip_path):
+         raise FileNotFoundError(f"CLIP model not found at {local_clip_path}. Please download it and place it there.")
+         
+    tokenizer = CLIPTokenizer.from_pretrained(local_clip_path)
+    text_encoder = CLIPTextModel.from_pretrained(local_clip_path)
     
-    tokenizer = CLIPTokenizer.from_pretrained("openai/clip-vit-large-patch14")
-    text_encoder = CLIPTextModel.from_pretrained("openai/clip-vit-large-patch14")
     text_input = tokenizer(text,  padding="max_length", max_length=tokenizer.model_max_length, truncation=True, return_tensors="pt")
     text_embeddings = text_encoder(text_input.input_ids)[0].to(dist.get_device(), non_blocking=True)
     pooler_output = text_encoder(text_input.input_ids)[1].to(dist.get_device(), non_blocking=True)
@@ -271,12 +266,10 @@ def generate_triplane_text(sar3d, clip_feats):
 
 def render_results(args, sar3d, triplane, g_BL, name, save_dir):
     """Helper function to render 3D reconstruction results"""
-    # Load and transform camera parameters
     camera = torch.load("./files/camera.pt").cpu()[0:24]
     rot = get_camera_rotation(args.flexicubes)
     camera = transform_camera(camera, rot)
 
-    # Render each triplane
     for i, tri in enumerate(triplane):
         render_fn = render_video_given_triplane_mesh if args.flexicubes else render_video_given_triplane
         
@@ -334,7 +327,6 @@ if __name__ == '__main__':
     try:
         main_test()
     finally:
-        # Cleanup
         dist.finalize()
         if isinstance(sys.stdout, misc.SyncPrint) and isinstance(sys.stderr, misc.SyncPrint):
             sys.stdout.close()
