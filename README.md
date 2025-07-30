@@ -117,6 +117,7 @@ You can also manually download them from our [model zoo](https://huggingface.co/
 
 ```
 mkdir checkpoints
+cd checkpoints
 wget https://hf-mirror.com/cyw-3d/sar3d/resolve/main/vqvae-flexicubes-ckpt.pt
 wget https://hf-mirror.com/cyw-3d/sar3d/resolve/main/vqvae-ckpt.pt
 wget https://hf-mirror.com/cyw-3d/sar3d/resolve/main/text-condition-ckpt.pth
