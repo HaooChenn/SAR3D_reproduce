@@ -110,6 +110,7 @@ dependencies:
   - xz=5.2.10=h5eee18b_1
   - zlib=1.2.13=h166bdaf_4
   - zstd=1.5.2=ha4553b6_0
+  - pip>=24.0
   - pip:
       - absl-py==2.1.0
       - accelerate==0.31.0
