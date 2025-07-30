@@ -85,6 +85,13 @@ git checkout v0.3.1
 pip install .
 ```
 
+安装libopenblas-dev
+```
+sudo apt-get update
+sudo apt-get install libopenblas-dev
+```
+
+
 再装其他依赖
 ```
 pip install -r requirements.txt
