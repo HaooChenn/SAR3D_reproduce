@@ -50,6 +50,10 @@ cd SAR3D
 ```
 
 2. **Set up environment**
+先配置环境
+```bash
+conda env create -f environment.yml
+```
 
 单独装apex
 ```
@@ -58,9 +62,24 @@ cd apex
 git checkout apex_no_distributed
 pip install -v --no-cache-dir ./
 ```
-再装环境
-```bash
-conda env create -f environment.yml
+
+单独装flash_attn
+```
+pip install packaging
+pip install ninja
+pip install flash-attn==2.6.3
+```
+
+或者手动安装flash_attn-2.6.3+cuxxtorchx.xcxx11abiFALSE-cp3x-cp3x-linux_x86_64，在https://github.com/Dao-AILab/flash-attention/releases
+(对应版本pytorch_2.0.0-py_3.9-cuda_11.7)
+```
+wget https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash_attn-2.6.3+cu118torch2.0cxx11abiFALSE-cp39-cp39-linux_x86_64.whl
+pip install flash_attn-2.6.3+cu118torch2.0cxx11abiFALSE-cp39-cp39-linux_x86_64.whl
+```
+
+再装其他依赖
+```
+pip install -r requirements.txt
 ```
 
 3. **Download pretrained models** 📥
