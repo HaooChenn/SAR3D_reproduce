@@ -104,7 +104,7 @@ pip install -r requirements.txt
 
 3. **Download pretrained models** 📥
 
-The pretrained models will be automatically downloaded to the `checkpoint` folder during first run.
+The pretrained models will be automatically downloaded to the `checkpoints` folder during first run.
 
 You can also manually download them from our [model zoo](https://huggingface.co/cyw-3d/sar3d):
 
@@ -116,8 +116,8 @@ You can also manually download them from our [model zoo](https://huggingface.co/
 | Generation | Text-conditioned model | [text-condition-ckpt.pth](https://huggingface.co/cyw-3d/sar3d/resolve/main/text-condition-ckpt.pth) |
 
 ```
-mkdir checkpoint
-cd checkpoint
+mkdir checkpoints
+cd checkpoints
 wget https://hf-mirror.com/cyw-3d/sar3d/resolve/main/vqvae-flexicubes-ckpt.pt
 wget https://hf-mirror.com/cyw-3d/sar3d/resolve/main/vqvae-ckpt.pt
 wget https://hf-mirror.com/cyw-3d/sar3d/resolve/main/text-condition-ckpt.pth
@@ -126,6 +126,47 @@ wget https://hf-mirror.com/cyw-3d/sar3d/resolve/main/image-condition-ckpt.pth
 
 
 4. **Run inference** 🚀
+先写json以及下载CLIP模型到本地：
+
+创建json文档，放以下内容，命名为`test_text.json`
+```
+{
+    "test_promts": [
+      "A small, cute, and round yellow Pikachu stuffed toy with a distinctive yellow color, pointy ears, and large black eyes, resembling the iconic Pokémon character"
+    ]
+  }
+
+```
+
+下载CLIP模型到本地：
+```
+mkdir pretrained_models
+cd pretrained_models
+mkdir clip-vit-large-patch14
+cd clip-vit-large-patch14
+wget https://hf-mirror.com/openai/clip-vit-large-patch14/resolve/main/config.json
+wget https://hf-mirror.com/openai/clip-vit-large-patch14/resolve/main/vocab.json
+wget https://hf-mirror.com/openai/clip-vit-large-patch14/resolve/main/tokenizer_config.json
+wget https://hf-mirror.com/openai/clip-vit-large-patch14/resolve/main/tokenizer.json
+wget https://hf-mirror.com/openai/clip-vit-large-patch14/resolve/main/tf_model.h5
+wget https://hf-mirror.com/openai/clip-vit-large-patch14/resolve/main/special_tokens_map.json
+wget https://hf-mirror.com/openai/clip-vit-large-patch14/resolve/main/pytorch_model.bin
+wget https://hf-mirror.com/openai/clip-vit-large-patch14/resolve/main/preprocessor_config.json
+wget https://hf-mirror.com/openai/clip-vit-large-patch14/resolve/main/model.safetensors
+wget https://hf-mirror.com/openai/clip-vit-large-patch14/resolve/main/merges.txt
+wget https://hf-mirror.com/openai/clip-vit-large-patch14/resolve/main/flax_model.msgpack
+```
+
+下载DINOv2模型到本地：
+```
+cd pretrained_models
+mkdir dinov2-large
+cd dinov2-large
+wget https://hf-mirror.com/facebook/dinov2-large/resolve/main/config.json
+wget https://hf-mirror.com/facebook/dinov2-large/resolve/main/model.safetensors
+wget https://hf-mirror.com/facebook/dinov2-large/resolve/main/preprocessor_config.json
+wget https://hf-mirror.com/facebook/dinov2-large/resolve/main/pytorch_model.bin
+```
 
 To test the model on your own images:
 
@@ -141,6 +182,12 @@ To test the model on your own text prompts:
 2. Run the inference script:
 ```bash
 bash test_text.sh
+```
+
+运行后打包
+```
+chmod +x pack.sh
+bash pack.sh
 ```
 
 ## 📚 Training
