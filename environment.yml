@@ -120,7 +120,6 @@ dependencies:
       - antlr4-python3-runtime==4.9.3
       - anyio==4.3.0
       - anykeystore==0.2
-      - apex==0.1
       - appdirs==1.4.4
       - argon2-cffi==23.1.0
       - argon2-cffi-bindings==21.2.0
