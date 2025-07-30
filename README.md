@@ -120,17 +120,7 @@ wget https://hf-mirror.com/cyw-3d/sar3d/resolve/main/image-condition-ckpt.pth
 
 
 4. **Run inference** 🚀
-先写json以及下载CLIP模型到本地：
-
-创建json文档，放以下内容，命名为`test_text.json`
-```
-{
-    "test_promts": [
-      "A small, cute, and round yellow Pikachu stuffed toy with a distinctive yellow color, pointy ears, and large black eyes, resembling the iconic Pokémon character"
-    ]
-  }
-
-```
+如果要改text prompt，在./test_files/test_text.json下面改即可
 
 下载CLIP模型到本地：
 ```
