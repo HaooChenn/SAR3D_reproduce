@@ -104,7 +104,7 @@ pip install -r requirements.txt
 
 3. **Download pretrained models** 📥
 
-The pretrained models will be automatically downloaded to the `checkpoints` folder during first run.
+The pretrained models will be automatically downloaded to the `checkpoint` folder during first run.
 
 You can also manually download them from our [model zoo](https://huggingface.co/cyw-3d/sar3d):
 
@@ -116,8 +116,8 @@ You can also manually download them from our [model zoo](https://huggingface.co/
 | Generation | Text-conditioned model | [text-condition-ckpt.pth](https://huggingface.co/cyw-3d/sar3d/resolve/main/text-condition-ckpt.pth) |
 
 ```
-mkdir checkpoints
-cd checkpoints
+mkdir checkpoint
+cd checkpoint
 wget https://hf-mirror.com/cyw-3d/sar3d/resolve/main/vqvae-flexicubes-ckpt.pt
 wget https://hf-mirror.com/cyw-3d/sar3d/resolve/main/vqvae-ckpt.pt
 wget https://hf-mirror.com/cyw-3d/sar3d/resolve/main/text-condition-ckpt.pth
