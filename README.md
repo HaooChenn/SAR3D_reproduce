@@ -77,6 +77,14 @@ wget https://github.com/Dao-AILab/flash-attention/releases/download/v2.6.3/flash
 pip install flash_attn-2.6.3+cu118torch2.0cxx11abiFALSE-cp39-cp39-linux_x86_64.whl
 ```
 
+安装nvdiffrast
+```
+git clone https://github.com/NVlabs/nvdiffrast.git
+cd nvdiffrast
+git checkout v0.3.1
+pip install .
+```
+
 再装其他依赖
 ```
 pip install -r requirements.txt
