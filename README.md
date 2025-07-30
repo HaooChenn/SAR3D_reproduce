@@ -90,12 +90,6 @@ pip install .
 sudo apt-get update
 sudo apt-get install libopenblas-dev
 ```
-安装numpy和numba
-```
-pip install numpy
-pip install numba
-```
-
 
 再装其他依赖
 ```
