@@ -119,7 +119,7 @@ def main_test():
     
     if args.text_conditioned:
         print("\n[INFO] Text-conditioned generation mode.")
-        test_prompts = json.load(open(args.text_json_path))['test_promts']
+        test_prompts = json.load(open(args.text_json_path))['test_prompts']
         
         # --- MODIFICATION: Improved tqdm progress bar ---
         progress_bar = tqdm(test_prompts, desc="Processing Prompts")
