@@ -50,6 +50,14 @@ cd SAR3D
 ```
 
 2. **Set up environment**
+安装系统库
+```
+# 安装BLAS和LAPACK库
+sudo apt-get update
+sudo apt-get install libopenblas-dev liblapack-dev
+# 或者安装更完整的科学计算库
+sudo apt-get install libblas-dev liblapack-dev libatlas-base-dev gfortran
+```
 先配置环境
 ```bash
 conda env create -f environment.yml
